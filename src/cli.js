@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { resolveWorkspace, initConfig, readJSON, atomicJSON, bookFor, addBook, bindVolume, scanBook, assertState, stateKey, lock } from './core.js';
-import { FanqieBrowser } from './browser.js';
+import { FanqieApi } from './api.js';
+import { refreshHttpSession, exportHttpSession } from './session.js';
+import { changeVolume, validateVolumeName } from './volumes.js';
 import { uploadChapters } from './upload.js';
 
 const HELP = `番茄小说 CLI
@@ -12,6 +14,10 @@ const HELP = `番茄小说 CLI
   fanqie add <别名> --title <后台书名> --source <正文目录>
   fanqie login                        打开独立 Chrome，手动登录并保存会话
   fanqie books                        列出本地作品与后台绑定
+  fanqie auth-refresh                 从现有 Chrome 登录态刷新 HTTP 会话
+  fanqie volumes <作品>               HTTP 查询后台分卷
+  fanqie volume-create <作品> --volume 第二卷 --remote-volume 第二卷：远行 [--dry-run]
+  fanqie volume-rename <作品> --volume 第一卷 --remote-volume 第一卷：开篇 [--dry-run]
   fanqie bind <作品> --url <章节管理页> --volume 第一卷 --remote-volume <后台分卷完整名称>
   fanqie check <作品> [--volume 第一卷] [--chapters 1-3]
   fanqie plan <作品> [--volume 第一卷] [--chapters 1-3]
@@ -24,7 +30,8 @@ const HELP = `番茄小说 CLI
 作品数量不限，使用 add 添加自己的作品。--chapters 支持 1、1-3、1,3-5。
 没有分卷子目录时，使用 --volume . 绑定正文根目录。
 upload 只存草稿；reconcile 只回读核对已有草稿，不创建或覆盖。
---json 输出 JSON；--headless 在后台运行（login/inspect 除外）。
+日常操作通过 HTTP；浏览器仅用于 login、auth-refresh 和 inspect。
+--json 输出 JSON；--headless 用于会话迁移时隐藏浏览器。
 --workspace <目录> / -w <目录> 指定工作区；默认从当前目录向上查找配置。
 配置及会话保存在工作区 .fanqie/ 下，不保存在工具安装目录。
 --version 显示版本。`;
@@ -47,7 +54,7 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
   if (flags.version) { console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version); return; }
   if (extra.length) throw new Error('多余参数；含空格的书名或分卷名请使用引号');
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect'].includes(command)) throw new Error(`未知命令：${command}`);
+  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename'].includes(command)) throw new Error(`未知命令：${command}`);
   const { root: ROOT, data: DATA, config: CONFIG } = await resolveWorkspace(flags.workspace ?? defaultWorkspace);
   const output = value => console.log(flags.json ? JSON.stringify(value, null, 2) : typeof value === 'string' ? value : JSON.stringify(value, null, 2));
   if (command === 'init') {
@@ -68,7 +75,7 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     return;
   }
   if (command === 'books') { output(config.books); return; }
-  const book = command === 'login' ? null : bookFor(config, alias);
+  const book = ['login', 'auth-refresh'].includes(command) ? null : bookFor(config, alias);
   const stateFile = path.join(DATA, 'state.json');
   if (command === 'status') {
     const state = await readJSON(stateFile, {});
@@ -115,34 +122,63 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
   }
   if (command === 'inspect' && (!flags.volume || !book.volumes[flags.volume])) throw new Error('inspect 需要已绑定的 --volume');
   if (['login', 'inspect'].includes(command) && !process.stdin.isTTY) throw new Error('请在本机交互式终端运行 login / inspect');
+  if (['volumes', 'volume-create', 'volume-rename'].includes(command) && !book.bookId) throw new Error('作品尚未绑定后台 ID，请先 bind');
+  if (['volume-create', 'volume-rename'].includes(command)) {
+    if (!flags.volume) throw new Error('分卷操作需要 --volume');
+    validateVolumeName(flags['remote-volume']);
+  }
   const release = await lock(DATA);
-  const adapter = new FanqieBrowser(config, { dataDir: DATA, headless: ['login', 'inspect'].includes(command) ? false : flags.headless ? true : undefined });
+  let adapter;
   try {
-    await adapter.start();
-    if (command === 'login') {
-      await adapter.page.goto('https://fanqienovel.com/main/writer/', { waitUntil: 'domcontentloaded' });
-      await waitForEnter('请在浏览器中完成登录，进入作品列表后回到这里按回车：');
-      // 从官方入口重新导航，确保会话持久化后仍能进入后台。
-      await adapter.goto('https://fanqienovel.com/main/writer/');
-      await adapter.page.waitForTimeout(1000);
-      if (/\/login(?:[/?]|$)/.test(adapter.page.url())) throw new Error('仍在登录页，请重新运行 login');
-      output('浏览器会话已保存。');
-    } else if (command === 'inspect') {
-      await adapter.goto(book.volumes[flags.volume].manageUrl);
-      await waitForEnter('请在浏览器中停留在要诊断的管理页或编辑页，然后按回车导出诊断：');
-      output(await adapter.diagnostics());
+    // 锁内重读配置，防止等待期间绑定被其他操作更新。
+    const fresh = await readJSON(CONFIG);
+    const activeBook = book ? bookFor(fresh, alias) : null;
+    if (['login', 'inspect'].includes(command)) {
+      const { FanqieBrowser } = await import('./browser.js');
+      adapter = new FanqieBrowser(fresh, { dataDir: DATA, headless: false });
+      await adapter.start();
+      if (command === 'login') {
+        await adapter.page.goto('https://fanqienovel.com/main/writer/', { waitUntil: 'domcontentloaded' });
+        await waitForEnter('请在浏览器中完成登录，进入作品列表后回到这里按回车：');
+        await adapter.goto('https://fanqienovel.com/main/writer/book-manage');
+        await adapter.page.waitForTimeout(1000);
+        await exportHttpSession(adapter, DATA);
+        output('浏览器与 HTTP 会话已保存。');
+      } else {
+        await adapter.goto(activeBook.volumes[flags.volume].manageUrl);
+        await waitForEnter('请在浏览器中停留在要诊断的管理页或编辑页，然后按回车导出诊断：');
+        output(await adapter.diagnostics());
+      }
+      return;
+    }
+    if (command === 'auth-refresh') {
+      await refreshHttpSession(fresh, DATA, { headless: flags.headless ?? true });
+      output('HTTP 会话已从现有浏览器登录态刷新，无需重新登录。');
+      return;
+    }
+    // 旧工作区首次升级：一次性复用 Chrome 会话导出，此后不启动浏览器。
+    if (!await readJSON(path.join(DATA, 'http-auth.json'), null)) await refreshHttpSession(fresh, DATA, { headless: flags.headless ?? true });
+    adapter = await new FanqieApi(fresh, { dataDir: DATA }).start();
+    if (command === 'volumes') {
+      await adapter.assertBook(activeBook);
+      output({ book: activeBook.title, volumes: await adapter.volumes(activeBook) });
+    } else if (['volume-create', 'volume-rename'].includes(command)) {
+      const journalFile = path.join(DATA, 'volume-operations.json');
+      output(await changeVolume({ adapter, book: activeBook, volume: flags.volume, remoteName: flags['remote-volume'],
+        action: command === 'volume-create' ? 'create' : 'rename', dryRun: flags['dry-run'],
+        journal: await readJSON(journalFile, {}), persist: value => atomicJSON(journalFile, value),
+        saveBook: async value => { fresh.books[alias] = value; await atomicJSON(CONFIG, fresh); },
+      }));
     } else {
+      // 正文可能由另一个写作进程更新；锁内重新扫描与核对上传状态。
+      chapters = await scanBook(activeBook, { volume: flags.volume, chapters: flags.chapters }, ROOT);
+      if (!chapters.length || !activeBook.volumes[flags.volume]) throw new Error('章节或分卷绑定已变化，请重新检查');
       const state = await readJSON(stateFile, {});
-      const result = await uploadChapters({ adapter, book, chapters, state,
+      const result = await uploadChapters({ adapter, book: activeBook, chapters, state,
         persist: value => atomicJSON(stateFile, value), reconcile: command === 'reconcile',
         log: flags.json ? () => {} : message => console.log(message),
       });
-      output({ book: book.title, results: result, message: '草稿已回读核对，尚未发布。' });
+      output({ book: activeBook.title, transport: 'http', results: result, message: '草稿已通过 HTTP 回读核对，尚未发布。' });
     }
-  } catch (error) {
-    if (adapter.page && !adapter.page.isClosed()) {
-      try { console.error(`诊断文件：${await adapter.diagnostics()}`); } catch { /* 保留原始错误 */ }
-    }
-    throw error;
-  } finally { try { await adapter.close(); } finally { await release(); } }
+  } finally { try { await adapter?.close(); } finally { await release(); } }
 }

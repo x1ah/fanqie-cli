@@ -1,9 +1,9 @@
 {
   "name": "@x1ah/fanqie-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "可复用的番茄作家后台 CLI：多作品配置、章节检查、草稿上传与回读核对",
+  "description": "番茄作家后台 HTTP CLI：分卷管理、章节检查、草稿上传与回读核对",
   "license": "UNLICENSED",
   "bin": {
     "fanqie": "./bin/fanqie.js"
@@ -12,12 +12,15 @@
     "./cli": "./src/cli.js",
     "./core": "./src/core.js",
     "./browser": "./src/browser.js",
-    "./upload": "./src/upload.js"
+    "./upload": "./src/upload.js",
+    "./api": "./src/api.js",
+    "./volumes": "./src/volumes.js"
   },
   "files": [
     "bin/",
     "src/",
-    "README.md"
+    "README.md",
+    "docs/"
   ],
   "scripts": {
     "fanqie": "node bin/fanqie.js",
@@ -28,6 +31,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "parse5": "8.0.0",
     "playwright": "1.58.2"
   },
   "repository": {

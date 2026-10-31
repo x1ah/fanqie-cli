@@ -88,7 +88,7 @@ test('已安装入口可从其他目录操作任意工作区，输出 JSON，并
   assert.equal(plan.chapters.length, 1);
   assert.equal(plan.chapters[0].bound, false);
   assert.deepEqual(await run(dir, 'books', '-w', b), {});
-  assert.equal((await exec(process.execPath, [cli, '--version'], { cwd: dir })).stdout.trim(), '0.2.0');
+  assert.equal((await exec(process.execPath, [cli, '--version'], { cwd: dir })).stdout.trim(), JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
 }));
 
 test('禁止两个别名绑定同一个平台作品，避免状态键发生碰撞', () => temporary(async dir => {

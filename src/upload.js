@@ -35,7 +35,10 @@ export async function uploadChapters({ adapter, book, chapters, state, persist, 
       state[key] = { ...base, status: 'pending', startedAt: new Date().toISOString() };
       await persist(state);
       log(`上传第 ${chapter.number} 章：${chapter.title}`);
-      editorUrl = await adapter.createDraft(book, binding, chapter);
+      editorUrl = await adapter.createDraft(book, binding, chapter, { allocated: async itemId => {
+        state[key] = { ...state[key], itemId };
+        await persist(state);
+      } });
     } else log(`回读核对第 ${chapter.number} 章：${chapter.title}`);
     state[key] = { ...base, status: 'verified', editorUrl, verifiedAt: new Date().toISOString() };
     await persist(state);
