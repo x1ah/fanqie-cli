@@ -12,6 +12,8 @@ export const API = Object.freeze({
   addVolume: '/api/author/volume/add_volume/v0', modifyVolumes: '/api/author/volume/modify/v0',
 });
 const allowed = new Set(Object.values(API));
+const publicationClients = new WeakSet();
+export const PUBLICATION_ENDPOINT = '/api/author/publish_article/v0/';
 export function id(value) {
   if ((typeof value !== 'string' && !Number.isSafeInteger(value)) || !/^\d+$/.test(String(value))) throw new Error('接口返回无效或不精确的 ID');
   return String(value);
@@ -47,8 +49,10 @@ export class FanqieApi {
   }
   async close() {}
   async request(method, api, params = {}) {
-    if (/\/publish_article\//.test(api)) throw new Error('拒绝非授权正式发布接口：本工具只保存草稿');
-    if (!allowed.has(api) || !['GET', 'POST'].includes(method)) throw new Error('拒绝非授权 API 地址或请求方法');
+    const publication = api === PUBLICATION_ENDPOINT && publicationClients.has(this);
+    if (/\/publish_article\//.test(api) && !publication) throw new Error('拒绝非授权正式发布接口：草稿适配器只保存草稿');
+    if ((!allowed.has(api) && !publication) || !['GET', 'POST'].includes(method)) throw new Error('拒绝非授权 API 地址或请求方法');
+    if (publication && (method !== 'POST' || params.publish_status !== 1 || params.timer_status !== 0 || ![1, 2].includes(params.use_ai))) throw new Error('发布请求必须明确提交审核、非定时及 AI 使用声明');
     if (method === 'POST' && !this.auth.csrfToken) throw new Error('缺少 CSRF 会话，请运行 auth-refresh');
     const url = new URL(api, ORIGIN);
     const headers = { Cookie: this.auth.cookie, Accept: 'application/json', Origin: ORIGIN, Referer: `${ORIGIN}/main/writer/` };
@@ -134,7 +138,7 @@ export class FanqieApi {
     for (const volume of volumes) {
       for (const row of await this.published(book, volume.volume_id)) {
         if (id(row.volume_id) !== volume.volume_id) throw new Error('章节列表返回其他分卷，停止核对');
-        entries.push({ ...parseRemoteTitle(row.title), itemId: id(row.item_id), volumeId: id(row.volume_id), kind: 'published' });
+        entries.push({ ...parseRemoteTitle(row.title), itemId: id(row.item_id), volumeId: id(row.volume_id), kind: 'published', displayStatus: row.display_status });
       }
     }
     for (const row of await this.drafts(book)) entries.push({ ...parseRemoteTitle(row.title), itemId: id(row.item_id), volumeId: id(row.volume_id), kind: 'drafts' });
@@ -146,8 +150,11 @@ export class FanqieApi {
     return data;
   }
   verifyArticle(data, volume, chapter) {
-    const actual = parseRemoteTitle(data.title);
     if (data.publish_status !== 0 || Number(data.timer_status) !== 0) throw new Error('章节已提交审核或待发布，拒绝作为草稿操作');
+    this.verifyContent(data, volume, chapter);
+  }
+  verifyContent(data, volume, chapter) {
+    const actual = parseRemoteTitle(data.title);
     if (id(data.volume_id) !== volume.volume_id) throw new Error('草稿所属分卷不一致');
     if (actual.number !== chapter.number || actual.title !== chapter.title || htmlToText(data.content) !== normalize(chapter.body)) throw new Error(`第 ${chapter.number} 章回读不一致（章号、标题或正文）`);
   }
@@ -178,5 +185,28 @@ export class FanqieApi {
     this.verifyArticle(await this.article(book, itemId), volume, chapter);
     // 不以写接口响应作为成功凭据；重新列草稿并读取正文。
     return this.openDraft(book, binding, chapter);
+  }
+}
+
+// 只有发布命令显式创建此客户端；配置、普通 upload 和 reconcile 无法开启发布权限。
+export class FanqiePublicationApi extends FanqieApi {
+  constructor(...args) { super(...args); publicationClients.add(this); }
+  async submitExistingDraft(book, binding, chapter, itemId, useAi) {
+    if (!['yes', 'no'].includes(useAi)) throw new Error('发布必须提供 --use-ai yes 或 no');
+    const volume = await this.resolveVolume(book, binding);
+    const inventory = await this.inventory(book, binding);
+    const rows = inventory.filter(r => r.number === chapter.number);
+    if (rows.length !== 1 || rows[0].itemId !== itemId || rows[0].kind !== 'drafts') throw new Error('提交前草稿状态或 ID 已变化，请先 publish-status');
+    const data = await this.article(book, itemId);
+    this.verifyArticle(data, volume, chapter);
+    if (data.author_speak || Number(data.column_data?.need_pay ?? 0) !== 0) throw new Error('含作者有话说或收费设置的草稿暂不支持 CLI 发布，请在后台确认设置');
+    // 保留经过核对的后台正文 HTML，不重新创建章节、不覆盖为另一份稿件。
+    return this.request('POST', PUBLICATION_ENDPOINT, {
+      item_id: id(itemId), book_id: id(book.bookId), title: data.title, content: data.content,
+      volume_id: volume.volume_id, volume_name: volume.volume_name,
+      publish_status: 1, timer_status: 0, timer_time: '', need_pay: 0,
+      device_platform: 'pc', speak_type: 0, use_ai: useAi === 'yes' ? 1 : 2,
+      timer_chapter_preview: '[]', has_chapter_ad: 'false', chapter_ad_types: '',
+    });
   }
 }

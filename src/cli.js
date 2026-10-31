@@ -7,6 +7,7 @@ import { FanqieApi } from './api.js';
 import { refreshHttpSession, exportHttpSession } from './session.js';
 import { changeVolume, validateVolumeName } from './volumes.js';
 import { uploadChapters } from './upload.js';
+import { publishChapters } from './publish.js';
 
 const HELP = `番茄小说 CLI
 
@@ -24,12 +25,16 @@ const HELP = `番茄小说 CLI
   fanqie upload <作品> --volume 第一卷 --chapters 1-3 [--dry-run]
   fanqie upload <作品> --volume 第一卷 --all
   fanqie reconcile <作品> --volume 第一卷 --chapters 1-3
+  fanqie publish <作品> --volume 第一卷 --chapters 1-3 --use-ai yes [--dry-run]
+  fanqie publish-status <作品> --volume 第一卷 --chapters 1-3
   fanqie status <作品>
   fanqie inspect <作品> --volume 第一卷
 
 作品数量不限，使用 add 添加自己的作品。--chapters 支持 1、1-3、1,3-5。
 没有分卷子目录时，使用 --volume . 绑定正文根目录。
 upload 只存草稿；reconcile 只回读核对已有草稿，不创建或覆盖。
+publish 独立提交已有草稿审核；不保证立即公开。publish-status 只查询发布结果。
+发布须明确章号；--use-ai yes/no 为实际 AI 使用声明；不支持 --all 或定时发布。
 日常操作通过 HTTP；浏览器仅用于 login、auth-refresh 和 inspect。
 --json 输出 JSON；--headless 用于会话迁移时隐藏浏览器。
 --workspace <目录> / -w <目录> 指定工作区；默认从当前目录向上查找配置。
@@ -48,13 +53,13 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     version: { type: 'boolean', short: 'v' }, workspace: { type: 'string', short: 'w' },
     title: { type: 'string' }, source: { type: 'string' }, discover: { type: 'boolean' },
     url: { type: 'string' }, 'book-id': { type: 'string' }, volume: { type: 'string' },
-    'remote-volume': { type: 'string' }, chapters: { type: 'string' }, all: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+    'use-ai': { type: 'string' }, 'remote-volume': { type: 'string' }, chapters: { type: 'string' }, all: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
   } });
   const [command, alias, ...extra] = positionals;
   if (flags.version) { console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version); return; }
   if (extra.length) throw new Error('多余参数；含空格的书名或分卷名请使用引号');
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename'].includes(command)) throw new Error(`未知命令：${command}`);
+  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename', 'publish', 'publish-status'].includes(command)) throw new Error(`未知命令：${command}`);
   const { root: ROOT, data: DATA, config: CONFIG } = await resolveWorkspace(flags.workspace ?? defaultWorkspace);
   const output = value => console.log(flags.json ? JSON.stringify(value, null, 2) : typeof value === 'string' ? value : JSON.stringify(value, null, 2));
   if (command === 'init') {
@@ -120,6 +125,14 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     if (!book.bookId || !book.volumes[flags.volume]) throw new Error('该分卷尚未绑定，请先运行 bind');
     if (command === 'upload') assertState(state, book, chapters);
   }
+  if (['publish', 'publish-status'].includes(command)) {
+    if (!flags.volume || !flags.chapters || flags.all) throw new Error('发布/查询请明确 --volume 和 --chapters，不支持 --all');
+    if (flags['use-ai'] !== undefined && !['yes','no'].includes(flags['use-ai'])) throw new Error('--use-ai 只能为 yes 或 no');
+    if (command === 'publish' && !flags['dry-run'] && !flags['use-ai']) throw new Error('发布必须明确 --use-ai yes 或 no');
+    if (!book.bookId || !book.volumes[flags.volume]) throw new Error('发布分卷尚未绑定');
+    chapters = await scanBook(book, { volume: flags.volume, chapters: flags.chapters }, ROOT);
+    if (!chapters.length) throw new Error('没有选中的本地章节');
+  }
   if (command === 'inspect' && (!flags.volume || !book.volumes[flags.volume])) throw new Error('inspect 需要已绑定的 --volume');
   if (['login', 'inspect'].includes(command) && !process.stdin.isTTY) throw new Error('请在本机交互式终端运行 login / inspect');
   if (['volumes', 'volume-create', 'volume-rename'].includes(command) && !book.bookId) throw new Error('作品尚未绑定后台 ID，请先 bind');
@@ -158,8 +171,17 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     }
     // 旧工作区首次升级：一次性复用 Chrome 会话导出，此后不启动浏览器。
     if (!await readJSON(path.join(DATA, 'http-auth.json'), null)) await refreshHttpSession(fresh, DATA, { headless: flags.headless ?? true });
-    adapter = await new FanqieApi(fresh, { dataDir: DATA }).start();
-    if (command === 'volumes') {
+    const Client = command === 'publish' && !flags['dry-run'] ? (await import('./api.js')).FanqiePublicationApi : FanqieApi;
+    adapter = await new Client(fresh, { dataDir: DATA }).start();
+    if (['publish', 'publish-status'].includes(command)) {
+      chapters = await scanBook(activeBook, { volume: flags.volume, chapters: flags.chapters }, ROOT);
+      const journalFile = path.join(DATA, 'publication-state.json');
+      const results = await publishChapters({ adapter, book: activeBook, chapters, useAi: flags['use-ai'],
+        journal: await readJSON(journalFile, {}), persist: value => atomicJSON(journalFile, value),
+        dryRun: !!flags['dry-run'], statusOnly: command === 'publish-status',
+      });
+      output({ book: activeBook.title, transport: 'http', results, message: flags['dry-run'] ? '在线预览，未提交发布。' : '已回读平台状态：reviewing=审核中，published=已发布；pending 表示结果未核实。' });
+    } else if (command === 'volumes') {
       await adapter.assertBook(activeBook);
       output({ book: activeBook.title, volumes: await adapter.volumes(activeBook) });
     } else if (['volume-create', 'volume-rename'].includes(command)) {

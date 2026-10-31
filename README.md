@@ -2,14 +2,14 @@
 
 通过 HTTP 接口把本地 Markdown / TXT 小说章节上传到番茄作家后台草稿箱。支持任意作品、正文目录和独立工作区。日常上传、回读与分卷管理无需启动 Chrome；浏览器只用于登录、刷新 HTTP 会话和手动诊断。
 
-当前版本 **只存草稿，不提交审核或正式发布**。提供章节格式检查、上传预览、正文回读、防重复创建、跨卷冲突检查和中断恢复。使用网页内部 HTTP 接口，接口变化后可能需要更新工具。
+**`upload` 只存草稿，独立的 `publish` 命令才提交审核。** 提交成功不等于已经公开，使用 `publish-status` 回读实际状态。提供章节格式检查、上传预览、正文回读、防重复创建、跨卷冲突检查和中断恢复。使用网页内部 HTTP 接口，接口变化后可能需要更新工具。
 
 ## 安装
 
 需要 Node.js 22+、npm。首次登录或刷新会话需要 Google Chrome。私有仓库需要相应 GitHub 访问权限。
 
 ```bash
-npm install -g 'git+ssh://git@github.com/x1ah/fanqie-cli.git#v0.3.0'
+npm install -g 'git+ssh://git@github.com/x1ah/fanqie-cli.git#v0.4.0'
 fanqie --version
 ```
 
@@ -105,7 +105,39 @@ fanqie status 新书
 
 新章分配前记录 `pending`，分配后记录真实 `itemId`，再以固定 `publish_status=0`、`timer_status=0` 保存草稿。写接口不自动重试。成功响应后重新查询草稿并读取正文，比对章号、标题、分卷、状态和文字，全部一致才记录 `verified`。比较忽略空行、段落首尾空白和不换行空格差异。
 
-**`verified` 只表示草稿内容一致，不代表提交审核、审核通过或已发布。** 工具不修改小说正文、连续性台账或创作进度。
+**上传记录中的 `verified` 只表示草稿内容一致，不代表提交审核、审核通过或已发布。** 发布另存独立日志，必须结合 `stage` 判断实际阶段。 工具不修改小说正文、连续性台账或创作进度。
+
+## 独立发布
+
+```bash
+# 在线预览：核对本地正文、分卷、草稿及已有发布状态，不发送发布请求
+fanqie publish 新书 --volume 第一卷 --chapters 1-3 --use-ai yes --dry-run
+
+# 将明确选择的已有草稿提交审核，不创建新章，不支持 --all
+fanqie publish 新书 --volume 第一卷 --chapters 1-3 --use-ai yes
+
+# 只回读状态，不提交、不重试
+fanqie publish-status 新书 --volume 第一卷 --chapters 1-3
+```
+
+`--use-ai yes` 表示使用了 AI，`no` 表示未使用；实际发布时必须明确填写，不能沿用示例而不核对实际创作情况。发布不会自动上传缺失的稿件，须先用 upload 保存并核对草稿。当前只支持立即提交普通免费草稿，不支持定时发布、收费设置或带作者有话说的草稿。
+
+`upload` 使用独立草稿接口 `cover_article`；它的客户端始终拒绝 `publish_article`。只有显式 publish 命令使用独立发布客户端，提交前重新核对真实草稿 ID、正文、章名、作品和卷；保留后台正文 HTML，以同一个 itemId 提交，不重新创建章节。
+
+整批先检查，正文或分卷不一致时不先提交前章。`--dry-run` 在线查询，但不提交或写入发布日志；不会把本地已改而后台未改的版本悄悄发布。
+
+| stage | 含义 |
+| --- | --- |
+| draft | 仍在草稿箱 |
+| reviewing | 审核中，不能报告为已发布 |
+| published | 已发布，列表与正文接口均已核对 |
+| rejected | 审核不通过，仅报告，不自动重新提交 |
+| scheduled | 平台已有定时待发，仅核对，不改排期 |
+| unknown | 状态未核实，保留原记录并停止自动提交 |
+
+发布日志保存在 `.fanqie/publication-state.json`，与草稿上传的 `state.json` 分开。写请求前记录 pending；响应丢失或回读不明时先运行 publish-status。即便仍显示草稿，也不会自动重发，需人工确认前次请求已明确失败后处理对应日志。已审核中或已发布的同一版本再次执行只回读，不重复提交；正文、卷或 itemId 变化会拒绝继续。
+
+发布日志里的 `status=verified` 表示相应 `stage` 已回读确认，不能单凭 verified 判断已经公开。工具不自动修改小说的作品信息、台账或已发布章数；维护这些记录须以实际状态为准。
 
 ## 中断恢复
 
@@ -133,6 +165,7 @@ fanqie -w /写作工作区 volumes 新书
   http-auth.json          # Cookie、CSRF 等 HTTP 会话，权限 0600
   state.json              # 按作品 ID + 章号记录上传结果
   volume-operations.json  # 分卷写入和回读恢复记录
+  publication-state.json  # 发布尝试、审核/公开状态与恢复记录
   run.lock                # HTTP、浏览器和配置操作共用进程锁
   diagnostics/            # 手动 inspect 导出的截图/控件信息
 ```
@@ -157,3 +190,5 @@ npm pack --dry-run
 浏览器测试默认 Chrome；安装 Chromium 后可运行 `FANQIE_TEST_CHANNEL=chromium npm run test:browser`。CI 在 Node.js 22/24 执行。
 
 HTTP 查询及已有草稿回读已在真实账号验证；新草稿写入和分卷写入通过模拟服务验证，尚待实际业务操作验收。详见 [接口研究记录](docs/api-research.md)。
+
+独立发布命令新增的测试固定发布接口契约，覆盖草稿路径隔离、预览/查询零提交、审核与公开区分、整批冲突和响应丢失恢复。真实平台仅验证发布预览及已有公开章节查询；没有为开发测试实际提交章节，正式发布提交链路仍待获得实际发布授权后的业务验收。

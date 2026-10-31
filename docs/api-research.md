@@ -52,3 +52,12 @@ v0.3.0曾误用`/api/author/publish_article/v0/`；即便传publish_status=0，�
 
 - https://github.com/CommitByRyan/fanqie-writer-mcp/blob/main/server.js
 - https://github.com/fuhei/tomato-writer-mcp
+
+
+## v0.4.0 独立发布契约
+
+2026-11-01根据当前网页 `Publish.da6ba01a.js` 的实际发布逻辑核对参数：POST `/api/author/publish_article/v0/`，发布路径为 `publish_status=1`、`timer_status=0`、`timer_time=''`、`device_platform=pc`，携带真实作品/章节/分卷 ID、标题和原始 HTML 正文、`need_pay`、`speak_type`、`use_ai`、`timer_chapter_preview`、广告字段。AI 声明按网页选项使用 yes=1/no=2。默认草稿客户端仍拒绝此接口，只有独立发布客户端允许提交。
+
+本版本先支持无作者有话说的普通免费草稿，拒绝不支持的附加内容；不支持定时。状态须结合章节列表及正文接口核对，不能以 HTTP 200 或业务 code=0 断言公开成功。
+
+开发期间只读取网页脚本并执行发布预览及已有公开章节查询；未发送真实发布请求。实际提交请求的回归验证只使用本地模拟后台。
