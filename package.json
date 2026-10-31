@@ -1,6 +1,6 @@
 {
   "name": "@x1ah/fanqie-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "番茄作家后台 HTTP CLI：分卷管理、章节检查、草稿上传与回读核对",

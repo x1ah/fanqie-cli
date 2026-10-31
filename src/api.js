@@ -8,7 +8,7 @@ export const API = Object.freeze({
   account: '/api/author/account/info/v0/', book: '/api/author/book/book_detail/v0/',
   volumes: '/api/author/volume/volume_list/v1', chapters: '/api/author/chapter/chapter_list/v1',
   drafts: '/api/author/chapter/draft_list/v1', article: '/api/author/edit_article/v0/',
-  allocate: '/api/author/article/new_article/v0/', save: '/api/author/publish_article/v0/',
+  allocate: '/api/author/article/new_article/v0/', save: '/api/author/article/cover_article/v0/',
   addVolume: '/api/author/volume/add_volume/v0', modifyVolumes: '/api/author/volume/modify/v0',
 });
 const allowed = new Set(Object.values(API));
@@ -47,6 +47,7 @@ export class FanqieApi {
   }
   async close() {}
   async request(method, api, params = {}) {
+    if (/\/publish_article\//.test(api)) throw new Error('拒绝非授权正式发布接口：本工具只保存草稿');
     if (!allowed.has(api) || !['GET', 'POST'].includes(method)) throw new Error('拒绝非授权 API 地址或请求方法');
     if (method === 'POST' && !this.auth.csrfToken) throw new Error('缺少 CSRF 会话，请运行 auth-refresh');
     const url = new URL(api, ORIGIN);
@@ -171,10 +172,10 @@ export class FanqieApi {
     await this.request('POST', API.save, {
       item_id: itemId, book_id: book.bookId, title: `第${chapter.number}章 ${chapter.title}`, content: textToHTML(chapter.body),
       volume_id: volume.volume_id, volume_name: volume.volume_name,
-      publish_status: 0, timer_status: 0, timer_time: 0, need_pay: 0,
-      device_platform: 'pc', speak_type: 0, timer_chapter_preview: '[]',
-      has_chapter_ad: 'false', chapter_ad_types: '', TerminalType: 'web', SoftType: 'web', OperateType: 'publish',
     });
+    // 草稿保存和正式发布是不同接口；不能凭一个 publish_status=0 参数判断安全。
+    // 独立读取实际状态，拒绝把已提交或已发布章节当成草稿成功。
+    this.verifyArticle(await this.article(book, itemId), volume, chapter);
     // 不以写接口响应作为成功凭据；重新列草稿并读取正文。
     return this.openDraft(book, binding, chapter);
   }

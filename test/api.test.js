@@ -32,8 +32,9 @@ async function backend(run) {
     else if (api===API.chapters) {const rows=db.published.filter(r=>r.volume_id===fields.volume_id);data={total_count:rows.length,item_list:page(rows)};}
     else if (api===API.article) {const row=db.drafts.find(r=>r.item_id===fields.item_id);data={...row,content:db.corrupt?'后台文字改变':row.content,column_data:{book_id:db.foreign?'999':'123'}};}
     else if (api===API.allocate) {db.allocates++;const item_id=String(90071992547409930n+BigInt(db.allocates));db.drafts.push({item_id,title:'',content:'<p><br></p>',volume_id:'100',publish_status:0,timer_status:0});data={item_id};}
-    else if (api===API.save) {
-      db.saves++;assert.equal(fields.publish_status,'0');assert.equal(fields.timer_status,'0');
+    // 路径固定为网页「存草稿」真实请求契约，不能跟随实现常量一起误改成发布接口。
+    else if (api==='/api/author/article/cover_article/v0/') {
+      db.saves++;assert.equal('publish_status' in fields,false);assert.equal('OperateType' in fields,false);
       assert.equal(fields.volume_id,'100');
       if(!db.failSave)Object.assign(db.drafts.find(r=>r.item_id===fields.item_id),fields,{publish_status:0,timer_status:0});
       if(db.failSave||db.failAfterSave){res.writeHead(500);res.end('not logged');return;}
@@ -68,7 +69,8 @@ test('HTTP 真正经过本地服务器：上传仅存草稿，回读与重跑不
   assert.equal(db.saves,1);assert.equal(db.allocates,1);
   assert.equal(state['123/1'].status,'verified');
   assert.ok(events.some(s=>s['123/1'].status==='pending'&&s['123/1'].itemId));
-  assert.equal(db.calls.some(c=>c.path===API.save&&c.fields.publish_status!=='0'),false);
+  assert.equal(db.calls.some(c=>c.path==='/api/author/publish_article/v0/'),false);
+  assert.equal(db.calls.filter(c=>c.path==='/api/author/article/cover_article/v0/').length,1);
   db.corrupt=true;await assert.rejects(uploadChapters(args),/回读不一致/);
   assert.equal(db.saves,1);
 }));
@@ -82,6 +84,13 @@ test('多页草稿、跨卷发布冲突先检查整批，零写入',()=>backend(
   assert.ok(db.calls.some(c=>c.path===API.drafts&&c.fields.page_index==='2'));
   await assert.rejects(uploadChapters({adapter:api,book:makeBook(),chapters:[chapter(1),chapter(2)],state:{},persist:async()=>{},log:()=>{}}),/已在发布列表/);
   assert.equal(db.allocates,0);
+}));
+
+test('草稿适配器即使传publish_status=0也绝不允许调用正式发布接口',()=>backend(async(api,db)=>{
+  await assert.rejects(api.request('POST','/api/author/publish_article/v0/',{publish_status:0}),/非授权/);
+  assert.equal(db.calls.length,0);
+  assert.equal(db.allocates,0);
+  assert.equal(db.saves,0);
 }));
 
 test('保存已到达服务器但响应失败：pending 保留分配 ID，reconcile 恢复且不重写',()=>backend(async(api,db)=>{
