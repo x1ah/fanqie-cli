@@ -78,7 +78,7 @@ export class FanqieApi {
     let body;
     try { body = await response.json(); } catch { throw new Error(`接口未返回 JSON：${api}；请检查会话或平台验证，写入结果需先核对`); }
     if (!body || body.code !== 0) {
-      if (body?.code === -100 || /登录|登陆|csrf|token|未授权/i.test(body?.message ?? '')) throw new Error('HTTP 登录或 CSRF 会话失效，请运行 auth-refresh 或 login');
+      if (/登录|登陆|csrf|token|未授权/i.test(body?.message ?? '')) throw new Error('HTTP 登录或 CSRF 会话失效，请运行 auth-refresh 或 login');
       throw new Error(`接口业务失败：${api}（code=${Number.isFinite(body?.code) ? body.code : '未知'}）`);
     }
     if (body.data == null && method === 'POST' && api !== API.allocate) return {};
@@ -109,7 +109,9 @@ export class FanqieApi {
   async pages(api, params, key) {
     const rows = [], signatures = new Set(); let expected;
     for (let page = 0; page < 1000; page++) {
-      const data = await this.request('GET', api, { ...params, page_index: page, page_count: 100 });
+      // 草稿列表大分页在超过30条时可能返回服务错误；保留分页完整性校验。
+      const pageCount = api === API.drafts ? 30 : 100;
+      const data = await this.request('GET', api, { ...params, page_index: page, page_count: pageCount });
       const list = data[key], total = data.total_count;
       if (!Array.isArray(list) || !Number.isSafeInteger(total) || total < 0) throw new Error('分页列表结构无效');
       expected ??= total;

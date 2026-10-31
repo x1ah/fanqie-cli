@@ -185,3 +185,20 @@ test('CLI 使用已有 HTTP 会话执行上传/核对/分卷命令，不创建�
     await assert.rejects(stat(path.join(dir,'.fanqie','run.lock')),e=>e.code==='ENOENT');
   }finally{globalThis.fetch=originalFetch;console.log=originalLog;await rm(dir,{recursive:true,force:true});}
 }));
+
+
+test('超过30条草稿以小分页完整回读，不将服务错误误判为掉登录',async()=>{
+  const rows=Array.from({length:61},(_,i)=>({item_id:String(i+1),title:`第${i+1}章 正文`,volume_id:'100'}));
+  const seen=[];
+  const api=await new FanqieApi({},{auth,fetchImpl:async(url,options)=>{
+    assert.equal(options.method,'GET');
+    const page=Number(url.searchParams.get('page_index')), size=Number(url.searchParams.get('page_count'));
+    seen.push(page);
+    if(size>30)return Response.json({code:-100,message:'服务器开小差了，请稍后再试'});
+    return good({total_count:rows.length,draft_list:rows.slice(page*size,(page+1)*size)});
+  }}).start();
+  assert.deepEqual(await api.drafts(makeBook()),rows);
+  assert.deepEqual(seen,[0,1,2]);
+  api.fetch=async()=>Response.json({code:-100,message:'服务器开小差了，请稍后再试'});
+  await assert.rejects(api.drafts(makeBook()),e=>e.message.includes('code=-100')&&!e.message.includes('登录'));
+});
