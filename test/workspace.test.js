@@ -100,3 +100,15 @@ test('禁止两个别名绑定同一个平台作品，避免状态键发生碰�
   await run('bind', 'a', ...flags);
   await assert.rejects(run('bind', 'b', ...flags), /已由别名/);
 }));
+
+test('修订命令拒绝隐式全书、--all和查询dry-run，不启动会话',()=>temporary(async dir=>{
+  const paths=workspacePaths(dir),config=await initConfig(paths);
+  config.books.测试={title:'测试作品',source:'正文',bookId:'123',volumes:{第一卷:{remoteName:'第一卷：开篇',volumeId:'100'}}};
+  await atomicJSON(paths.config,config);
+  for(const args of [
+    ['revise','测试','--volume','第一卷'],
+    ['revise','测试','--volume','第一卷','--chapters','1','--all'],
+    ['revise-status','测试','--volume','第一卷','--chapters','1','--dry-run'],
+  ]) await assert.rejects(exec(process.execPath,[cli,'--workspace',dir,...args]),e=>/明确|不支持|只读查询/.test(e.stderr));
+  assert.equal(await readFile(paths.config,'utf8'),JSON.stringify(config,null,2)+'\n');
+}));

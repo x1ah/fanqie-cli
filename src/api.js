@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { parseFragment } from 'parse5';
 import { readJSON, normalize, validateURL } from './core.js';
 
@@ -168,6 +169,29 @@ export class FanqieApi {
     const itemId = id(found[0].item_id);
     this.verifyArticle(await this.article(book, itemId), volume, chapter);
     return this.editorUrl(book, itemId);
+  }
+  async revisionSnapshot(book, binding, chapter, itemId) {
+    const volume = await this.resolveVolume(book, binding);
+    const rows = (await this.inventory(book, binding)).filter(row => row.number === chapter.number);
+    if (rows.length !== 1 || rows[0].kind !== 'drafts' || rows[0].itemId !== id(itemId)) throw new Error('修订无法唯一定位原章草稿；拒绝新建或修改已发布章');
+    const data = await this.article(book, itemId);
+    if (data.publish_status !== 0 || Number(data.timer_status) !== 0) throw new Error('章节已提交审核或待发布，拒绝修订');
+    if (rows[0].volumeId !== volume.volume_id || id(data.volume_id) !== volume.volume_id) throw new Error('修订不允许跨卷移动');
+    const actual = parseRemoteTitle(data.title), body = htmlToText(data.content);
+    if (actual.number !== chapter.number) throw new Error('原章号不符');
+    const hash = createHash('sha256').update(actual.number + '\n' + actual.title + '\n' + normalize(body)).digest('hex');
+    return { hash, title: actual.title, content: data.content, volumeId: volume.volume_id };
+  }
+  async reviseDraft(book, binding, chapter, { itemId, expectedHash }) {
+    const before = await this.revisionSnapshot(book, binding, chapter, itemId);
+    if (before.hash !== expectedHash) throw new Error('写入前原草稿摘要已变化，拒绝覆盖');
+    const volume = await this.resolveVolume(book, binding);
+    await this.request('POST', API.save, {
+      item_id: id(itemId), book_id: book.bookId, title: '第' + chapter.number + '章 ' + chapter.title, content: textToHTML(chapter.body),
+      volume_id: volume.volume_id, volume_name: volume.volume_name,
+    });
+    this.verifyArticle(await this.article(book, itemId), volume, chapter);
+    return this.openDraft(book, binding, chapter);
   }
   async createDraft(book, binding, chapter, { allocated = async () => {} } = {}) {
     // 写入前再次查整书，避免预检以后产生重复章号。

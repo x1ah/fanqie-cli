@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { API, FanqieApi, textToHTML, htmlToText, id } from '../src/api.js';
 import { uploadChapters } from '../src/upload.js';
-import { atomicJSON, parseChapter } from '../src/core.js';
+import { atomicJSON, parseChapter, normalize } from '../src/core.js';
 import { changeVolume } from '../src/volumes.js';
 const auth = { cookie: 'session=fake', csrfToken: 'fake-csrf', userAgent: 'test-agent' };
 const binding = { remoteName: '第一卷：开篇', manageUrl: 'https://fanqienovel.com/main/writer/chapter-manage/123' };
@@ -202,3 +202,77 @@ test('超过30条草稿以小分页完整回读，不将服务错误误判为掉
   api.fetch=async()=>Response.json({code:-100,message:'服务器开小差了，请稍后再试'});
   await assert.rejects(api.drafts(makeBook()),e=>e.message.includes('code=-100')&&!e.message.includes('登录'));
 });
+
+async function revisionFixture(api) {
+  const book = makeBook(), old = chapter(1), state = {}, journal = {};
+  await uploadChapters({adapter:api,book,chapters:[old],state,persist:async()=>{},log:()=>{}});
+  const revised = {...old, body: old.body.replace('梨落地了。','梨已收进屋。')};
+  const parsed = parseChapter('# 第1章 '+revised.title+'\n\n'+revised.body, old.file);
+  return {book,old,revised:{...parsed,volume:old.volume},state,journal};
+}
+const runRevision = async (api,f,opts={}) => {
+  const {reviseChapters} = await import('../src/revise.js');
+  return reviseChapters({adapter:api,book:f.book,chapters:[f.revised],state:f.state,journal:f.journal,persistState:async()=>{},persistJournal:async()=>{},...opts});
+};
+
+test('原章修订：在线预览零写入，旧稿摘要保护，沿用原ID并回读真实草稿',()=>backend(async(api,db)=>{
+  const f=await revisionFixture(api),itemId=db.drafts[0].item_id;
+  assert.equal((await runRevision(api,f,{dryRun:true}))[0].status,'would-revise');
+  assert.equal(db.saves,1);assert.equal(Object.keys(f.journal).length,0);
+  const r=await runRevision(api,f);
+  assert.equal(r[0].itemId,itemId);assert.equal(r[0].status,'draft-verified');
+  assert.equal(db.saves,2);assert.equal(db.allocates,1);assert.equal(db.drafts.length,1);
+  assert.equal(f.state['123/1'].hash,f.revised.hash);
+  assert.equal(f.journal['123/1'].previous.hash,f.old.hash);
+  assert.equal(htmlToText(f.journal['123/1'].previous.content),normalize(f.old.body));
+  await runRevision(api,f);assert.equal(db.saves,2);
+  assert.ok(!db.calls.some(c=>c.path.includes('publish_article')));
+}));
+
+test('原章修订：外部改稿/重复章号/非原ID/未知记录/审核定时状态均拒绝覆盖',()=>backend(async(api,db)=>{
+  const f=await revisionFixture(api), row=db.drafts[0], content=row.content;
+  row.content='<p>人工改过了。</p>';await assert.rejects(runRevision(api,f),/摘要不符/);row.content=content;
+  db.drafts.push({...row,item_id:'99999'});await assert.rejects(runRevision(api,f),/唯一定位/);db.drafts.pop();
+  const url=f.state['123/1'].editorUrl;f.state['123/1'].editorUrl=url.replace(row.item_id,'99999');
+  await assert.rejects(runRevision(api,f),/唯一定位/);f.state['123/1'].editorUrl=url;
+  row.publish_status=1;await assert.rejects(runRevision(api,f),/审核/);row.publish_status=0;
+  row.timer_status=1;await assert.rejects(runRevision(api,f),/待发布/);row.timer_status=0;
+  row.volume_id='222';await assert.rejects(runRevision(api,f),/跨卷/);row.volume_id='100';
+  const record=f.state['123/1'];delete f.state['123/1'];await assert.rejects(runRevision(api,f),/原草稿核验记录/);f.state['123/1']=record;
+  db.published.push({...row});await assert.rejects(runRevision(api,f),/唯一定位/);db.published=[];
+  assert.equal(db.saves,1);assert.equal(db.allocates,1);
+}));
+
+test('原章修订：写后响应丢失只读恢复同ID，不重发、不新建',()=>backend(async(api,db)=>{
+  const f=await revisionFixture(api);
+  db.failAfterSave=true;
+  await assert.rejects(runRevision(api,f),/HTTP/);
+  assert.equal(db.saves,2);assert.equal(f.journal['123/1'].status,'pending');
+  assert.equal(f.state['123/1'].status,'pending-revision');
+  await assert.rejects(runRevision(api,f),/revise-status/);
+  db.failAfterSave=false;
+  const r=await runRevision(api,f,{statusOnly:true});
+  assert.equal(r[0].status,'draft-verified');assert.equal(db.saves,2);
+  assert.equal(f.state['123/1'].hash,f.revised.hash);assert.equal(f.journal['123/1'].status,'verified');
+}));
+
+test('原章修订：确认未应用后恢复旧记录，显式再次修订才写入',()=>backend(async(api,db)=>{
+  const f=await revisionFixture(api);db.failSave=true;
+  await assert.rejects(runRevision(api,f),/HTTP/);
+  db.failSave=false;
+  const r=await runRevision(api,f,{statusOnly:true});
+  assert.equal(r[0].status,'not-applied');assert.equal(db.saves,2);
+  assert.equal(f.state['123/1'].hash,f.old.hash);assert.equal(f.state['123/1'].status,'verified');
+  await runRevision(api,f);assert.equal(db.saves,3);assert.equal(db.allocates,1);
+}));
+
+test('原章修订：日志落盘失败时不能写稿；写前再查摘要拒绝并发更改',()=>backend(async(api,db)=>{
+  const f=await revisionFixture(api);
+  await assert.rejects(runRevision(api,f,{persistJournal:async()=>{throw Error('磁盘失败');}}),/磁盘/);
+  assert.equal(db.saves,1);
+  f.journal={};
+  await assert.rejects(runRevision(api,f,{persistState:async()=>{
+    db.drafts[0].content='<p>写前有人改了。</p>';
+  }}),/摘要已变化/);
+  assert.equal(db.saves,1);
+}));

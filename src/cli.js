@@ -8,6 +8,7 @@ import { refreshHttpSession, exportHttpSession } from './session.js';
 import { changeVolume, validateVolumeName } from './volumes.js';
 import { uploadChapters } from './upload.js';
 import { publishChapters } from './publish.js';
+import { reviseChapters } from './revise.js';
 
 const HELP = `番茄小说 CLI
 
@@ -25,14 +26,14 @@ const HELP = `番茄小说 CLI
   fanqie upload <作品> --volume 第一卷 --chapters 1-3 [--dry-run]
   fanqie upload <作品> --volume 第一卷 --all
   fanqie reconcile <作品> --volume 第一卷 --chapters 1-3
-  fanqie publish <作品> --volume 第一卷 --chapters 1-3 --use-ai yes [--dry-run]
+  fanqie revise <作品> --volume 第一卷 --chapters 1-3 [--dry-run]\n  fanqie revise-status <作品> --volume 第一卷 --chapters 1-3\n  fanqie publish <作品> --volume 第一卷 --chapters 1-3 --use-ai yes [--dry-run]
   fanqie publish-status <作品> --volume 第一卷 --chapters 1-3
   fanqie status <作品>
   fanqie inspect <作品> --volume 第一卷
 
 作品数量不限，使用 add 添加自己的作品。--chapters 支持 1、1-3、1,3-5。
 没有分卷子目录时，使用 --volume . 绑定正文根目录。
-upload 只存草稿；reconcile 只回读核对已有草稿，不创建或覆盖。
+upload 只存草稿；reconcile 只回读核对已有草稿，不创建或覆盖。\nrevise 仅按已核验旧稿摘要修改原章同卷草稿，写前备份；结果不明先 revise-status，不重复新建。
 publish 独立提交已有草稿审核；不保证立即公开。publish-status 只查询发布结果。
 发布须明确章号；--use-ai yes/no 为实际 AI 使用声明；不支持 --all 或定时发布。
 日常操作通过 HTTP；浏览器仅用于 login、auth-refresh 和 inspect。
@@ -59,7 +60,7 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
   if (flags.version) { console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version); return; }
   if (extra.length) throw new Error('多余参数；含空格的书名或分卷名请使用引号');
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename', 'publish', 'publish-status'].includes(command)) throw new Error(`未知命令：${command}`);
+  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename', 'publish', 'publish-status', 'revise', 'revise-status'].includes(command)) throw new Error(`未知命令：${command}`);
   const { root: ROOT, data: DATA, config: CONFIG } = await resolveWorkspace(flags.workspace ?? defaultWorkspace);
   const output = value => console.log(flags.json ? JSON.stringify(value, null, 2) : typeof value === 'string' ? value : JSON.stringify(value, null, 2));
   if (command === 'init') {
@@ -125,6 +126,13 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     if (!book.bookId || !book.volumes[flags.volume]) throw new Error('该分卷尚未绑定，请先运行 bind');
     if (command === 'upload') assertState(state, book, chapters);
   }
+  if (['revise', 'revise-status'].includes(command)) {
+    if (!flags.volume || !flags.chapters || flags.all) throw new Error('修订/查询请明确 --volume 和 --chapters，不支持 --all');
+    if (command === 'revise-status' && flags['dry-run']) throw new Error('revise-status 已是只读查询，不使用 --dry-run');
+    chapters = await scanBook(book, { volume: flags.volume, chapters: flags.chapters }, ROOT);
+    if (!chapters.length || !book.bookId || !book.volumes[flags.volume]) throw new Error('没有有效章节或分卷未绑定');
+  }
+
   if (['publish', 'publish-status'].includes(command)) {
     if (!flags.volume || !flags.chapters || flags.all) throw new Error('发布/查询请明确 --volume 和 --chapters，不支持 --all');
     if (flags['use-ai'] !== undefined && !['yes','no'].includes(flags['use-ai'])) throw new Error('--use-ai 只能为 yes 或 no');
@@ -173,7 +181,16 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     if (!await readJSON(path.join(DATA, 'http-auth.json'), null)) await refreshHttpSession(fresh, DATA, { headless: flags.headless ?? true });
     const Client = command === 'publish' && !flags['dry-run'] ? (await import('./api.js')).FanqiePublicationApi : FanqieApi;
     adapter = await new Client(fresh, { dataDir: DATA }).start();
-    if (['publish', 'publish-status'].includes(command)) {
+    if (['revise', 'revise-status'].includes(command)) {
+      chapters = await scanBook(activeBook, { volume: flags.volume, chapters: flags.chapters }, ROOT);
+      const journalFile = path.join(DATA, 'draft-revisions.json');
+      const results = await reviseChapters({ adapter, book: activeBook, chapters,
+        state: await readJSON(stateFile, {}), journal: await readJSON(journalFile, {}),
+        persistState: value => atomicJSON(stateFile, value), persistJournal: value => atomicJSON(journalFile, value),
+        dryRun: !!flags['dry-run'], statusOnly: command === 'revise-status',
+      });
+      output({ book: activeBook.title, transport: 'http', results, message: flags['dry-run'] ? '在线修订预览，未写入。' : '仅核对/修订原草稿；not-applied=未应用，draft-verified=全文草稿一致；未提交审核。' });
+    } else if (['publish', 'publish-status'].includes(command)) {
       chapters = await scanBook(activeBook, { volume: flags.volume, chapters: flags.chapters }, ROOT);
       const journalFile = path.join(DATA, 'publication-state.json');
       const results = await publishChapters({ adapter, book: activeBook, chapters, useAi: flags['use-ai'],

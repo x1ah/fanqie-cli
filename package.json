@@ -1,6 +1,6 @@
 {
   "name": "@x1ah/fanqie-cli",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "番茄作家后台 HTTP CLI：分卷管理、草稿上传、独立发布与回读核对",
@@ -15,7 +15,8 @@
     "./upload": "./src/upload.js",
     "./api": "./src/api.js",
     "./volumes": "./src/volumes.js",
-    "./publish": "./src/publish.js"
+    "./publish": "./src/publish.js",
+    "./revise": "./src/revise.js"
   },
   "files": [
     "bin/",
