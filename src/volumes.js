@@ -9,7 +9,7 @@ export function validateVolumeName(name) {
 }
 
 // 只管理分卷；不移动章节，不删除分卷，也不提交审核。
-export async function changeVolume({ adapter, book, volume, remoteName, action, journal, persist, saveBook, dryRun = false }) {
+export async function changeVolume({ adapter, book, volume, remoteName, action, journal, persist, saveBook, dryRun = false, replaceVolumeId, resolveNotApplied = false }) {
   if (!volume || ['__proto__', 'constructor', 'prototype'].includes(volume) || !['create', 'rename'].includes(action)) throw new Error('分卷操作需要有效的 --volume');
   const prefix = validateVolumeName(remoteName);
   const manageUrl = book.volumes[volume]?.manageUrl ?? Object.values(book.volumes)[0]?.manageUrl;
@@ -20,6 +20,17 @@ export async function changeVolume({ adapter, book, volume, remoteName, action, 
   const key = `${book.bookId}/${volume}`;
   let op = journal[key];
   if (op?.status === 'pending' && (op.action !== action || op.remoteName !== remoteName)) throw new Error('该卷上次操作未核实，请先用相同命令核对恢复');
+  if (replaceVolumeId) {
+    if (action !== 'create' || !binding) throw new Error('替换临存绑定仅适用于已绑定卷的新建');
+    const source = await adapter.resolveVolume(book, binding, list);
+    if (source.volume_id !== replaceVolumeId || binding.remoteName === remoteName) throw new Error('临存源卷ID或目标不符');
+  }
+  if (resolveNotApplied) {
+    if (dryRun || action !== 'create' || op?.status !== 'pending' || !same(op.before, before) || list.some(v=>v.volume_name === remoteName)) throw new Error('无法确认旧新建尚未应用，保留日志');
+    journal[key] = {...op,status:'not-applied',checkedAt:new Date().toISOString()};
+    await persist(journal);
+    return {volume,remoteName,status:'not-applied',message:'仅回读并登记旧请求尚未应用，未重发；后续显式新建保留旧日志'};
+  }
   let target;
   if (op?.status === 'pending') {
     if (action === 'rename') {
@@ -32,7 +43,7 @@ export async function changeVolume({ adapter, book, volume, remoteName, action, 
     }
   } else {
     if (action === 'create') {
-      if (binding && binding.remoteName !== remoteName) throw new Error('本地卷已绑定其他后台卷，拒绝替换');
+      if (binding && binding.remoteName !== remoteName && !replaceVolumeId) throw new Error('本地卷已绑定其他后台卷，拒绝替换');
       const found = list.filter(v => v.volume_name === remoteName);
       if (found.length > 1) throw new Error('存在重名分卷，停止操作');
       target = found[0];
@@ -47,7 +58,7 @@ export async function changeVolume({ adapter, book, volume, remoteName, action, 
     const unchanged = target?.volume_name === remoteName;
     if (dryRun) return { action, remoteName, volume, write: !unchanged, message: '仅 HTTP 查询预览，未写入' };
     if (!unchanged) {
-      op = { action, remoteName, volumeId: target?.volume_id, before, status: 'pending', startedAt: new Date().toISOString() };
+      op = { ...(op ? { previousAttempt: op } : {}), action, remoteName, volumeId: target?.volume_id, before, status: 'pending', startedAt: new Date().toISOString() };
       journal[key] = op; await persist(journal);
       if (action === 'create') await adapter.request('POST', API.addVolume, { book_id: book.bookId, volume_name: remoteName });
       else await adapter.request('POST', API.modifyVolumes, { book_id: book.bookId, volume_data: JSON.stringify(before.map(v => v.volume_id === target.volume_id ? { ...v, volume_name: remoteName } : v)) });

@@ -15,7 +15,7 @@ const chapter = number => ({ ...parseChapter(`# 第${number}章 新篇${number}\
 const good = data => Response.json({ code: 0, message: 'success', data });
 
 async function backend(run) {
-  const db = { volumes: [{ book_id: '123', volume_id: '100', volume_name: binding.remoteName, index: 0 }], drafts: [], published: [], saves: 0, allocates: 0, volumeWrites: 0, calls: [], failSave: false, failAfterSave: false, corrupt: false, foreign: false };
+  const db = { volumes: [{ book_id: '123', volume_id: '100', volume_name: binding.remoteName, index: 0 }], drafts: [], published: [], saves: 0, allocates: 0, volumeWrites: 0, book: {book_id:'123',book_name:'测试书',abstract:'旧简介',gender:1,category:[],thumb_uri:'cover',sign_pattern:1}, calls: [], failSave: false, failAfterSave: false, corrupt: false, foreign: false };
   const server = createServer(async (req,res) => {
     const url = new URL(req.url, 'http://localhost');
     let raw=''; for await (const part of req) raw += part;
@@ -26,7 +26,8 @@ async function backend(run) {
     let data;
     const page = rows => { const start = Number(fields.page_index)*2; return rows.slice(start,start+2); };
     const api=url.pathname;
-    if (api===API.book) data={book_id:'123',book_name:'测试书'};
+    if (api===API.book) data=db.book;
+    else if(api===API.modifyBook){db.book.abstract=fields.abstract;data=null;}
     else if (api===API.volumes) data={volume_list:db.volumes};
     else if (api===API.drafts) data={total_count:db.drafts.length,draft_list:page(db.drafts)};
     else if (api===API.chapters) {const rows=db.published.filter(r=>r.volume_id===fields.volume_id);data={total_count:rows.length,item_list:page(rows)};}
@@ -35,7 +36,7 @@ async function backend(run) {
     // 路径固定为网页「存草稿」真实请求契约，不能跟随实现常量一起误改成发布接口。
     else if (api==='/api/author/article/cover_article/v0/') {
       db.saves++;assert.equal('publish_status' in fields,false);assert.equal('OperateType' in fields,false);
-      assert.equal(fields.volume_id,'100');
+      assert.ok(db.volumes.some(v=>v.volume_id === fields.volume_id));
       if(!db.failSave)Object.assign(db.drafts.find(r=>r.item_id===fields.item_id),fields,{publish_status:0,timer_status:0});
       if(db.failSave||db.failAfterSave){res.writeHead(500);res.end('not logged');return;}
       data=null;
@@ -181,6 +182,18 @@ test('CLI 使用已有 HTTP 会话执行上传/核对/分卷命令，不创建�
     await run('volume-create','新书','--volume','第二卷','--remote-volume','第二卷：远行','--dry-run');assert.equal(db.volumeWrites,0);
     await run('volume-create','新书','--volume','第二卷','--remote-volume','第二卷：远行');
     const config=JSON.parse(await readFile(path.join(dir,'.fanqie','config.json')));assert.equal(config.selectors.body,'旧选择器');assert.equal(config.books.新书.volumes.第二卷.volumeId,'200');
+    await writeFile(path.join(dir,'简介.txt'),'新简介');
+    await run('book-abstract','新书','--abstract-file','简介.txt','--dry-run');assert.equal(output.at(-1).status,'would-revise');assert.equal(db.book.abstract,'旧简介');
+    await run('book-abstract','新书','--abstract-file','简介.txt');assert.equal(output.at(-1).status,'verified');assert.equal(db.book.abstract,'新简介');
+    await run('book-abstract-status','新书','--abstract-file','简介.txt');assert.equal(output.at(-1).status,'verified');
+    // 移动本地源路径后，用同一历史ID核验记录执行新CLI分派，不调用revise。
+    await mkdir(path.join(dir,'正文','第二卷'),{recursive:true});
+    const {rename}=await import('node:fs/promises');
+    await rename(path.join(dir,'正文','第一卷','第1章_新篇1.md'),path.join(dir,'正文','第二卷','第1章_新篇1.md'));
+    const st=JSON.parse(await readFile(path.join(dir,'.fanqie','state.json')));st['123/1'].volume='第二卷';await atomicJSON(path.join(dir,'.fanqie','state.json'),st);
+    await run('move','新书','--volume','第二卷','--chapters','1','--from-volume-id','100','--dry-run');assert.equal(output.at(-1).results[0].status,'would-move');
+    await run('move','新书','--volume','第二卷','--chapters','1','--from-volume-id','100');assert.equal(output.at(-1).results[0].status,'draft-moved-verified');
+    await run('move-status','新书','--volume','第二卷','--chapters','1','--from-volume-id','100');assert.equal(output.at(-1).results[0].status,'draft-moved-verified');
     await assert.rejects(stat(path.join(dir,'.fanqie','browser')),e=>e.code==='ENOENT');
     await assert.rejects(stat(path.join(dir,'.fanqie','run.lock')),e=>e.code==='ENOENT');
   }finally{globalThis.fetch=originalFetch;console.log=originalLog;await rm(dir,{recursive:true,force:true});}
@@ -275,4 +288,60 @@ test('原章修订：日志落盘失败时不能写稿；写前再查摘要拒�
     db.drafts[0].content='<p>写前有人改了。</p>';
   }}),/摘要已变化/);
   assert.equal(db.saves,1);
+}));
+
+
+async function moveFixture(api,db) {
+  const book=makeBook(),state={},journal={};const ch=chapter(1);ch.volume='第二卷';
+  const original={...ch,volume:'第一卷'};
+  await uploadChapters({adapter:api,book,chapters:[original],state,persist:async()=>{},log:()=>{}});
+  state['123/1'].volume='第二卷';
+  db.volumes.push({book_id:'123',volume_id:'200',volume_name:'第二卷：远行'});
+  book.volumes.第二卷={...binding,remoteName:'第二卷：远行',volumeId:'200'};
+  return {book,state,journal,ch};
+}
+async function runMove(api,f,options={}) {
+  const {moveChapters}=await import('../src/move.js');
+  return moveChapters({adapter:api,book:f.book,chapters:[f.ch],sourceVolumeId:'100',state:f.state,journal:f.journal,persistState:async()=>{},persistJournal:async()=>{},...options});
+}
+test('移卷保留原ID原HTML，预览零写入，实际全文/卷/草稿回读；重跑不重写',()=>backend(async(api,db)=>{
+  const f=await moveFixture(api,db),itemId=db.drafts[0].item_id,html=db.drafts[0].content;
+  assert.equal((await runMove(api,f,{dryRun:true}))[0].status,'would-move');assert.equal(db.saves,1);
+  const r=await runMove(api,f);assert.equal(r[0].itemId,itemId);assert.equal(r[0].volumeId,'200');
+  assert.equal(db.drafts[0].content,html);assert.equal(db.allocates,1);assert.equal(db.saves,2);
+  assert.equal(f.state['123/1'].actualVolumeId,'200');assert.equal(f.journal['123/1'].previous.content,html);
+  await runMove(api,f);assert.equal(db.saves,2);
+  assert.ok(!db.calls.some(c=>c.path.includes('publish_article')));
+}));
+test('移卷响应丢失只读恢复，未应用必须查询后显式重试',()=>backend(async(api,db)=>{
+  const f=await moveFixture(api,db);db.failAfterSave=true;
+  await assert.rejects(runMove(api,f),/HTTP/);assert.equal(f.state['123/1'].status,'pending-move');
+  await assert.rejects(runMove(api,f),/move-status/);db.failAfterSave=false;
+  assert.equal((await runMove(api,f,{statusOnly:true}))[0].status,'draft-moved-verified');assert.equal(db.saves,2);
+  db.drafts[0].volume_id='100';f.journal['123/1'].status='pending';f.state['123/1'].status='pending-move';
+  assert.equal((await runMove(api,f,{statusOnly:true}))[0].status,'not-applied');assert.equal(db.saves,2);
+  await runMove(api,f);assert.equal(db.saves,3);assert.equal(db.allocates,1);
+}));
+test('移卷拒绝外部改稿、重复章号、审核定时稿、第三卷、错误源ID、无旧记录和日志落盘失败',()=>backend(async(api,db)=>{
+  const f=await moveFixture(api,db),row=db.drafts[0],html=row.content;
+  row.content='<p>外部修改</p>';await assert.rejects(runMove(api,f),/回读不一致/);row.content=html;
+  db.drafts.push({...row,item_id:'999'});await assert.rejects(runMove(api,f),/唯一定位/);db.drafts.pop();
+  row.publish_status=1;await assert.rejects(runMove(api,f),/审核/);row.publish_status=0;
+  row.timer_status=1;await assert.rejects(runMove(api,f),/待发布/);row.timer_status=0;
+  row.volume_id='300';await assert.rejects(runMove(api,f),/源卷/);row.volume_id='100';
+  await assert.rejects(runMove(api,f,{sourceVolumeId:'200'}),/源卷/);
+  await assert.rejects(runMove(api,f,{state:{}}),/核验记录/);
+  await assert.rejects(runMove(api,f,{persistJournal:async()=>{throw Error('磁盘失败');}}),/磁盘/);
+  assert.equal(db.saves,1);assert.equal(db.allocates,1);
+}));
+test('新建可显式替换真实临存源绑定，错误ID零写入；旧未应用日志只读登记且保留历史',()=>backend(async(api,db)=>{
+  const book=makeBook();book.volumes.第二卷={...binding};const journal={};
+  const args={adapter:api,book,volume:'第二卷',remoteName:'第二卷：远行',action:'create',journal,persist:async()=>{},saveBook:async()=>{}};
+  await assert.rejects(changeVolume(args),/绑定其他/);
+  await assert.rejects(changeVolume({...args,replaceVolumeId:'999'}),/源卷ID/);assert.equal(db.volumeWrites,0);
+  journal['123/第二卷']={action:'create',remoteName:args.remoteName,status:'pending',before:db.volumes.map(v=>({volume_id:v.volume_id,volume_name:v.volume_name}))};
+  await assert.rejects(changeVolume({...args,replaceVolumeId:'100'}),/不会自动再次/);
+  await changeVolume({...args,replaceVolumeId:'100',resolveNotApplied:true});assert.equal(db.volumeWrites,0);assert.equal(journal['123/第二卷'].status,'not-applied');
+  await changeVolume({...args,replaceVolumeId:'100'});assert.equal(db.volumeWrites,1);assert.equal(book.volumes.第二卷.volumeId,'200');
+  assert.equal(journal['123/第二卷'].previousAttempt.status,'not-applied');
 }));

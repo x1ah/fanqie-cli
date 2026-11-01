@@ -9,6 +9,8 @@ import { changeVolume, validateVolumeName } from './volumes.js';
 import { uploadChapters } from './upload.js';
 import { publishChapters } from './publish.js';
 import { reviseChapters } from './revise.js';
+import { moveChapters } from './move.js';
+import { reviseAbstract } from './metadata.js';
 
 const HELP = `番茄小说 CLI
 
@@ -28,7 +30,7 @@ const HELP = `番茄小说 CLI
   fanqie reconcile <作品> --volume 第一卷 --chapters 1-3
   fanqie revise <作品> --volume 第一卷 --chapters 1-3 [--dry-run]\n  fanqie revise-status <作品> --volume 第一卷 --chapters 1-3\n  fanqie publish <作品> --volume 第一卷 --chapters 1-3 --use-ai yes [--dry-run]
   fanqie publish-status <作品> --volume 第一卷 --chapters 1-3
-  fanqie status <作品>
+  fanqie move <作品> --volume 第二卷 --chapters 31-60 --from-volume-id <原卷ID> [--dry-run]\n  fanqie move-status <作品> --volume 第二卷 --chapters 31-60 --from-volume-id <原卷ID>\n  fanqie book-abstract <作品> --abstract-file <简介纯文字文件> [--dry-run]\n  fanqie book-abstract-status <作品> --abstract-file <简介纯文字文件>\n  fanqie status <作品>
   fanqie inspect <作品> --volume 第一卷
 
 作品数量不限，使用 add 添加自己的作品。--chapters 支持 1、1-3、1,3-5。
@@ -54,13 +56,14 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     version: { type: 'boolean', short: 'v' }, workspace: { type: 'string', short: 'w' },
     title: { type: 'string' }, source: { type: 'string' }, discover: { type: 'boolean' },
     url: { type: 'string' }, 'book-id': { type: 'string' }, volume: { type: 'string' },
+    'abstract-file': { type: 'string' }, 'from-volume-id': { type: 'string' }, 'replace-volume-id': { type: 'string' }, 'resolve-not-applied': { type: 'boolean' },
     'use-ai': { type: 'string' }, 'remote-volume': { type: 'string' }, chapters: { type: 'string' }, all: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
   } });
   const [command, alias, ...extra] = positionals;
   if (flags.version) { console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version); return; }
   if (extra.length) throw new Error('多余参数；含空格的书名或分卷名请使用引号');
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename', 'publish', 'publish-status', 'revise', 'revise-status'].includes(command)) throw new Error(`未知命令：${command}`);
+  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename', 'publish', 'publish-status', 'revise', 'revise-status', 'move', 'move-status', 'book-abstract', 'book-abstract-status'].includes(command)) throw new Error(`未知命令：${command}`);
   const { root: ROOT, data: DATA, config: CONFIG } = await resolveWorkspace(flags.workspace ?? defaultWorkspace);
   const output = value => console.log(flags.json ? JSON.stringify(value, null, 2) : typeof value === 'string' ? value : JSON.stringify(value, null, 2));
   if (command === 'init') {
@@ -126,9 +129,9 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     if (!book.bookId || !book.volumes[flags.volume]) throw new Error('该分卷尚未绑定，请先运行 bind');
     if (command === 'upload') assertState(state, book, chapters);
   }
-  if (['revise', 'revise-status'].includes(command)) {
+  if (['revise', 'revise-status', 'move', 'move-status'].includes(command)) {
     if (!flags.volume || !flags.chapters || flags.all) throw new Error('修订/查询请明确 --volume 和 --chapters，不支持 --all');
-    if (command === 'revise-status' && flags['dry-run']) throw new Error('revise-status 已是只读查询，不使用 --dry-run');
+    if (['revise-status','move-status'].includes(command) && flags['dry-run']) throw new Error('revise-status 已是只读查询，不使用 --dry-run');
     chapters = await scanBook(book, { volume: flags.volume, chapters: flags.chapters }, ROOT);
     if (!chapters.length || !book.bookId || !book.volumes[flags.volume]) throw new Error('没有有效章节或分卷未绑定');
   }
@@ -181,7 +184,21 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     if (!await readJSON(path.join(DATA, 'http-auth.json'), null)) await refreshHttpSession(fresh, DATA, { headless: flags.headless ?? true });
     const Client = command === 'publish' && !flags['dry-run'] ? (await import('./api.js')).FanqiePublicationApi : FanqieApi;
     adapter = await new Client(fresh, { dataDir: DATA }).start();
-    if (['revise', 'revise-status'].includes(command)) {
+    if (['book-abstract', 'book-abstract-status'].includes(command)) {
+      if (!flags['abstract-file'] || !activeBook.bookId) throw new Error('需要绑定作品和 --abstract-file');
+      if (flags.volume || flags.chapters || flags.all || (command==='book-abstract-status' && flags['dry-run'])) throw new Error('简介命令参数不适用');
+      const abstract = (await readFile(path.resolve(ROOT,flags['abstract-file']),'utf8')).trim();
+      const journalFile=path.join(DATA,'book-abstract-operations.json');
+      output(await reviseAbstract({adapter,book:activeBook,abstract,journal:await readJSON(journalFile,{}),persist:v=>atomicJSON(journalFile,v),dryRun:!!flags['dry-run'],statusOnly:command==='book-abstract-status'}));
+    } else if (['move', 'move-status'].includes(command)) {
+      chapters = await scanBook(activeBook, { volume: flags.volume, chapters: flags.chapters }, ROOT);
+      const journalFile = path.join(DATA, 'draft-moves.json');
+      const results = await moveChapters({adapter,book:activeBook,chapters,sourceVolumeId:flags['from-volume-id'],
+        state:await readJSON(stateFile,{}),journal:await readJSON(journalFile,{}),
+        persistState:value=>atomicJSON(stateFile,value),persistJournal:value=>atomicJSON(journalFile,value),
+        dryRun:!!flags['dry-run'],statusOnly:command === 'move-status'});
+      output({book:activeBook.title,results,message:'原ID草稿移卷/核验；未提交审核。'});
+    } else if (['revise', 'revise-status'].includes(command)) {
       chapters = await scanBook(activeBook, { volume: flags.volume, chapters: flags.chapters }, ROOT);
       const journalFile = path.join(DATA, 'draft-revisions.json');
       const results = await reviseChapters({ adapter, book: activeBook, chapters,
@@ -205,6 +222,7 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
       const journalFile = path.join(DATA, 'volume-operations.json');
       output(await changeVolume({ adapter, book: activeBook, volume: flags.volume, remoteName: flags['remote-volume'],
         action: command === 'volume-create' ? 'create' : 'rename', dryRun: flags['dry-run'],
+        replaceVolumeId:flags['replace-volume-id'],resolveNotApplied:!!flags['resolve-not-applied'],
         journal: await readJSON(journalFile, {}), persist: value => atomicJSON(journalFile, value),
         saveBook: async value => { fresh.books[alias] = value; await atomicJSON(CONFIG, fresh); },
       }));

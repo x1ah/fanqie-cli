@@ -10,6 +10,7 @@ export const API = Object.freeze({
   volumes: '/api/author/volume/volume_list/v1', chapters: '/api/author/chapter/chapter_list/v1',
   drafts: '/api/author/chapter/draft_list/v1', article: '/api/author/edit_article/v0/',
   allocate: '/api/author/article/new_article/v0/', save: '/api/author/article/cover_article/v0/',
+  modifyBook: '/api/author/book/modify_book/v0/',
   addVolume: '/api/author/volume/add_volume/v0', modifyVolumes: '/api/author/volume/modify/v0',
 });
 const allowed = new Set(Object.values(API));
@@ -191,6 +192,25 @@ export class FanqieApi {
       volume_id: volume.volume_id, volume_name: volume.volume_name,
     });
     this.verifyArticle(await this.article(book, itemId), volume, chapter);
+    return this.openDraft(book, binding, chapter);
+  }
+  async moveSnapshot(book, binding, chapter, itemId, sourceVolumeId) {
+    const target = await this.resolveVolume(book, binding);
+    const list = await this.volumes(book);
+    if (!list.some(v => v.volume_id === id(sourceVolumeId)) || sourceVolumeId === target.volume_id) throw new Error('移卷源卷无效或与目标相同');
+    const rows = (await this.inventory(book, binding)).filter(r => r.number === chapter.number);
+    if (rows.length !== 1 || rows[0].kind !== 'drafts' || rows[0].itemId !== id(itemId)) throw new Error('移卷不能唯一定位原ID草稿');
+    const data = await this.article(book, itemId);
+    const currentVolumeId = id(data.volume_id);
+    if (![sourceVolumeId, target.volume_id].includes(currentVolumeId) || rows[0].volumeId !== currentVolumeId) throw new Error('当前卷不在明确源卷/目标卷中');
+    this.verifyArticle(data, { volume_id: currentVolumeId }, chapter);
+    return { volumeId: currentVolumeId, content: data.content, title: data.title, target };
+  }
+  async moveDraft(book, binding, chapter, { itemId, sourceVolumeId }) {
+    const before = await this.moveSnapshot(book, binding, chapter, itemId, sourceVolumeId);
+    if (before.volumeId !== sourceVolumeId) throw new Error('写前源卷变化，请先 move-status');
+    await this.request('POST', API.save, { item_id: id(itemId), book_id: book.bookId,
+      title: before.title, content: before.content, volume_id: before.target.volume_id, volume_name: before.target.volume_name });
     return this.openDraft(book, binding, chapter);
   }
   async createDraft(book, binding, chapter, { allocated = async () => {} } = {}) {
