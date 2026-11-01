@@ -81,7 +81,8 @@ export class FanqieApi {
     try { body = await response.json(); } catch { throw new Error(`接口未返回 JSON：${api}；请检查会话或平台验证，写入结果需先核对`); }
     if (!body || body.code !== 0) {
       if (/登录|登陆|csrf|token|未授权/i.test(body?.message ?? '')) throw new Error('HTTP 登录或 CSRF 会话失效，请运行 auth-refresh 或 login');
-      throw new Error(`接口业务失败：${api}（code=${Number.isFinite(body?.code) ? body.code : '未知'}）`);
+      const error = new Error(`接口业务失败：${api}（code=${Number.isFinite(body?.code) ? body.code : '未知'}）`);
+      error.api = api; error.businessCode = body?.code; throw error;
     }
     if (body.data == null && method === 'POST' && api !== API.allocate) return {};
     if (!body.data || typeof body.data !== 'object') throw new Error(`接口数据结构无效：${api}`);

@@ -221,3 +221,5 @@ fanqie revise-status 示例 --volume 第一卷 --chapters 2
 `book-abstract <作品> --abstract-file <纯文字文件> --dry-run` 预览，去掉 dry-run 同步简介并回读。按官方网页 modify_book 空字段保持其他资料契约，只写简介；保存旧简介和名称/分类/封面/模式等快照，核对其他字段不变。未知先 `book-abstract-status` 同文件回读。不会修改全局笔名、签约或作品模式。简介超过500字符拒绝。
 
 55项逻辑/HTTP测试和2项本地模拟浏览器测试验证；真实后台业务结果另记于调用工作区，不能将模拟测试视为真实发布。
+
+发布后 edit_article 出现 -2014 作品信息审核锁定时，v0.5.1 仅有限只读等待（最多12次，每次间隔2秒，刷新库存再核原ID/卷/全文），不重发POST；超限仍保留pending，先publish-status。58项单元HTTP与2项本地模拟浏览器验证，真实审核时长不作保证。

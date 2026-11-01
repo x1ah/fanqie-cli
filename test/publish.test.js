@@ -27,9 +27,9 @@ async function backend(run){
       case '/api/author/volume/volume_list/v1':data={volume_list:[{book_id:'123',volume_id:'100',volume_name:'第一卷：开篇',index:1}]};break;
       case '/api/author/chapter/draft_list/v1':{const rows=db.rows.filter(r=>r.publish_status===0);data={total_count:rows.length,draft_list:rows};break;}
       case '/api/author/chapter/chapter_list/v1':{const rows=db.rows.filter(r=>r.publish_status===1);data={total_count:rows.length,item_list:rows};break;}
-      case '/api/author/edit_article/v0/':data=db.rows.find(r=>r.item_id===fields.item_id);break;
+      case '/api/author/edit_article/v0/':if(db.lockReads>0){db.lockReads--;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({code:-2014,message:'作品信息审核中，请勿重复提交'}));return;}data=db.rows.find(r=>r.item_id===fields.item_id);break;
       case '/api/author/publish_article/v0/':{
-        db.posts++;assert.equal(fields.publish_status,'1');assert.equal(fields.timer_status,'0');assert.equal(fields.timer_time,'');assert.ok(['1','2'].includes(fields.use_ai));
+        db.posts++;if(db.lockAfter)db.lockReads=db.lockAfter;assert.equal(fields.publish_status,'1');assert.equal(fields.timer_status,'0');assert.equal(fields.timer_time,'');assert.ok(['1','2'].includes(fields.use_ai));
         assert.equal(req.headers['x-secsdk-csrf-token'],auth.csrfToken);
         assert.equal(fields.book_id,'123');assert.equal(fields.volume_id,'100');
         const row=db.rows.find(r=>r.item_id===fields.item_id);
@@ -151,4 +151,24 @@ test('预检后草稿被修改，提交前再次核对阻止发布',()=>backend(
   api.submitExistingDraft=async(...params)=>{db.rows[0].content='<p>提交前发生修改</p>';return submit(...params);};
   const opts=args(api);
   await assert.rejects(publishChapters(opts),/回读不一致/);assert.equal(db.posts,0);assert.equal(opts.journal['123/1'].status,'pending');
+}));
+
+
+test('发布后-2014短暂锁定仅有限GET回读，原ID/全文核验恢复且不重复提交',()=>backend(async(api,db)=>{
+ const opts={...args(api),wait:async()=>{}};db.lockAfter=2;
+ const result=await publishChapters(opts);assert.equal(result[0].stage,'reviewing');assert.equal(db.posts,1);assert.equal(db.lockReads,0);
+ db.rows[0].display_status=1;assert.equal((await publishChapters({...opts,statusOnly:true}))[0].stage,'published');assert.equal(db.posts,1);
+}));
+test('审核锁定超出有限回读仍保留pending，其他错误不按锁定重试',()=>backend(async(api,db)=>{
+ const opts={...args(api),wait:async()=>{}};db.lockAfter=99;
+ await assert.rejects(publishChapters(opts),e=>e.businessCode===-2014);assert.equal(db.posts,1);assert.equal(opts.journal['123/1'].status,'pending');assert.equal(db.lockReads,87);
+ db.lockReads=0;db.rows[0].display_status=1;await publishChapters({...opts,statusOnly:true});assert.equal(db.posts,1);
+}));
+
+
+test('审核转公开过程中列表与正文短暂不同步，仅刷新核验后确认公开',()=>backend(async(api,db)=>{
+ const opts={...args(api),wait:async()=>{}};db.rows[0].publish_status=1;db.rows[0].display_status=4;
+ const original=api.article.bind(api);let reads=0;
+ api.article=async(...a)=>{const data=await original(...a);if(reads++===0){db.rows[0].display_status=1;return {...data,display_status:1};}return data;};
+ const result=await publishChapters({...opts,statusOnly:true});assert.equal(result[0].stage,'published');assert.equal(db.posts,0);assert.equal(reads,2);
 }));
