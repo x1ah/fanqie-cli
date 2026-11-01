@@ -3,6 +3,18 @@ import { createHash } from 'node:crypto';
 import { parseFragment } from 'parse5';
 import { readJSON, normalize, validateURL } from './core.js';
 
+function readPool(limit) {
+  let active = 0; const queue = [];
+  return async operation => {
+    await new Promise(resolve => {
+      const enter = () => { active++; resolve(); };
+      if (active < limit) enter(); else queue.push(enter);
+    });
+    try { return await operation(); }
+    finally { active--; queue.shift()?.(); }
+  };
+}
+
 export const ORIGIN = 'https://fanqienovel.com';
 const COMMON = { aid: '2503', app_name: 'muye_novel' };
 export const API = Object.freeze({
@@ -42,6 +54,9 @@ export class FanqieApi {
   constructor(config, { dataDir, auth, fetchImpl = globalThis.fetch } = {}) {
     this.config = config; this.dataDir = dataDir; this.auth = auth; this.fetch = fetchImpl;
     this.timeout = config.http?.timeout ?? 15000;
+    const concurrency = config.http?.readConcurrency ?? 4;
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('http.readConcurrency 须为1—8的整数');
+    this.runRead = readPool(concurrency);
   }
   async start() {
     this.auth ??= await readJSON(path.join(this.dataDir, 'http-auth.json'), null);
@@ -51,6 +66,10 @@ export class FanqieApi {
   }
   async close() {}
   async request(method, api, params = {}) {
+    if (method === 'GET') return this.runRead(() => this.#request(method, api, params));
+    return this.#request(method, api, params);
+  }
+  async #request(method, api, params = {}) {
     const publication = api === PUBLICATION_ENDPOINT && publicationClients.has(this);
     if (/\/publish_article\//.test(api) && !publication) throw new Error('拒绝非授权正式发布接口：草稿适配器只保存草稿');
     if ((!allowed.has(api) && !publication) || !['GET', 'POST'].includes(method)) throw new Error('拒绝非授权 API 地址或请求方法');
@@ -110,25 +129,31 @@ export class FanqieApi {
     return matches[0];
   }
   async pages(api, params, key) {
-    const rows = [], signatures = new Set(); let expected;
-    for (let page = 0; page < 1000; page++) {
-      // 草稿列表大分页在超过30条时可能返回服务错误；保留分页完整性校验。
-      const pageCount = api === API.drafts ? 30 : 100;
-      const data = await this.request('GET', api, { ...params, page_index: page, page_count: pageCount });
+    // 先读首面的实际大小，兼容服务端以更小分页返回的情况；读请求总并发有界。
+    const pageCount = api === API.drafts ? 30 : 100;
+    const get = page => this.request('GET', api, { ...params, page_index: page, page_count: pageCount });
+    const first = await get(0), expected = first.total_count;
+    if (!Array.isArray(first[key]) || !Number.isSafeInteger(expected) || expected < 0) throw new Error('分页列表结构无效');
+    const size = first[key].length;
+    if ((!size && expected) || size > expected) throw new Error('接口分页数量不一致，停止核对');
+    const pageTotal = size ? Math.ceil(expected / size) : 1;
+    if (pageTotal > 1000) throw new Error('接口分页超过上限');
+    const pending = await Promise.allSettled(Array.from({ length: pageTotal - 1 }, (_,i) => get(i + 1)));
+    // 失败也等所有独立读请求结束，才交回命令锁；任何失败都不会继续到写入。
+    for (const result of pending) if (result.status === 'rejected') throw result.reason;
+    const rows = [], signatures = new Set();
+    for (const data of [first, ...pending.map(result => result.value)]) {
       const list = data[key], total = data.total_count;
       if (!Array.isArray(list) || !Number.isSafeInteger(total) || total < 0) throw new Error('分页列表结构无效');
-      expected ??= total;
       if (expected !== total) throw new Error('核对期间远端章节总数变化，请重新核对');
       const signature = JSON.stringify(list.map(v => id(v.item_id)));
       if (signatures.has(signature) && list.length) throw new Error('接口分页重复，停止以免漏检章节');
       signatures.add(signature); rows.push(...list);
-      if (rows.length === total) {
-        if (new Set(rows.map(v => id(v.item_id))).size !== rows.length) throw new Error('分页存在重复章节 ID');
-        return rows;
-      }
-      if (!list.length || rows.length > total) throw new Error('接口分页数量不一致，停止核对');
+      if ((!list.length && expected) || rows.length > expected) throw new Error('接口分页数量不一致，停止核对');
     }
-    throw new Error('接口分页超过上限');
+    if (rows.length !== expected) throw new Error('接口分页数量不一致，停止核对');
+    if (new Set(rows.map(v => id(v.item_id))).size !== rows.length) throw new Error('分页存在重复章节 ID');
+    return rows;
   }
   async published(book, volumeId) {
     return this.pages(API.chapters, { book_id: book.bookId, volume_id: volumeId, status: 0, sort: '', must_have_correction_feedback: 0, need_correction_feedback_num: 1 }, 'item_list');
@@ -139,14 +164,16 @@ export class FanqieApi {
     const volumes = await this.volumes(book);
     await this.resolveVolume(book, binding, volumes);
     const entries = [];
-    // 已发布接口按卷返回，遍历全部卷才能发现跨卷重复章号。
-    for (const volume of volumes) {
-      for (const row of await this.published(book, volume.volume_id)) {
+    // 全部分卷和草稿仍完整核查；独立GET并行，返回次序按卷列表保持不变。
+    const lists = await Promise.allSettled([...volumes.map(volume => this.published(book, volume.volume_id)), this.drafts(book)]);
+    for (const result of lists) if (result.status === 'rejected') throw result.reason;
+    for (const [index, volume] of volumes.entries()) {
+      for (const row of lists[index].value) {
         if (id(row.volume_id) !== volume.volume_id) throw new Error('章节列表返回其他分卷，停止核对');
         entries.push({ ...parseRemoteTitle(row.title), itemId: id(row.item_id), volumeId: id(row.volume_id), kind: 'published', displayStatus: row.display_status });
       }
     }
-    for (const row of await this.drafts(book)) entries.push({ ...parseRemoteTitle(row.title), itemId: id(row.item_id), volumeId: id(row.volume_id), kind: 'drafts' });
+    for (const row of lists.at(-1).value) entries.push({ ...parseRemoteTitle(row.title), itemId: id(row.item_id), volumeId: id(row.volume_id), kind: 'drafts' });
     return entries;
   }
   async article(book, itemId) {
