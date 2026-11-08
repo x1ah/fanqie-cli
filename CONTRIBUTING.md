@@ -40,4 +40,4 @@ PR 说明写清触发条件、行为变化和验证范围。模拟测试通过�
 
 ## 发布检查
 
-更新 package.json、package-lock.json 与 CHANGELOG；执行全部测试及 `npm pack --dry-run`，确认产物只包含预期源码和文档。检查暂存区、提交历史、凭据和依赖后再创建版本 tag。npm 发布与 GitHub 仓库公开分别处理；本仓库的 `private: true` 用于防止误发 npm，不影响 GitHub 源码可见性。
+更新 package.json、package-lock.json 与 CHANGELOG；执行全部测试及 `npm pack --dry-run`，确认产物只包含预期源码和文档。检查暂存区、提交历史、凭据和依赖后再创建版本 tag。npm 发布使用 `npm publish --access public`，发布后核对 npm 上的版本并验证安装命令；GitHub tag 与 npm 版本分别核对。

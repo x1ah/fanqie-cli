@@ -1,7 +1,6 @@
 {
   "name": "@x1ah/fanqie-cli",
   "version": "0.5.4",
-  "private": true,
   "type": "module",
   "description": "番茄作家后台 HTTP CLI：分卷管理、草稿上传、独立发布与回读核对",
   "license": "MIT",
@@ -56,5 +55,9 @@
     "novel",
     "cli",
     "markdown"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }

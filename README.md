@@ -30,7 +30,7 @@
 需要 [Node.js](https://nodejs.org/) **22 或更高版本**（含 npm）。首次登录默认使用 Google Chrome。
 
 ```bash
-npm install -g 'git+https://github.com/x1ah/fanqie-cli.git#v0.5.3'
+npm install -g @x1ah/fanqie-cli
 fanqie --version
 fanqie --help
 ```
@@ -190,6 +190,12 @@ npm run test:browser
 [MIT](LICENSE) © 2026 x1ah。
 
 ## 修改已发布的原章节
+
+此功能需要 **v0.5.4+**。使用该版本可从 GitHub 安装：
+
+```bash
+npm install -g 'git+https://github.com/x1ah/fanqie-cli.git#v0.5.4'
+```
 
 作者明确授权改稿后，先本地审读，再使用 `revise-published <作品> --volume <卷> --chapters <范围> --use-ai yes --dry-run` 核对原ID、卷、旧摘要及状态。如果历史草稿摘要早于平台文字兼容修订，可显式提供 `--baseline-source <已备份原正文目录>`，工具会将该旧稿与当前后台逐字核对，任一差异仍拒绝写入。去掉 `--dry-run` 才提交原章修改；不会新建、移卷或改变阅读位置。原HTML和发布证据保存在工作区私有 `published-revisions.json`。
 
