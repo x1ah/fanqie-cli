@@ -22,6 +22,8 @@ export const HELP = `番茄小说 CLI
   fanqie upload <作品> --volume 第一卷 --all
   fanqie reconcile <作品> --volume 第一卷 --chapters 1-3
   fanqie revise <作品> --volume 第一卷 --chapters 1-3 [--dry-run]
+  fanqie revise-published <作品> --volume 第一卷 --chapters 1-3 --use-ai yes [--dry-run]
+  fanqie revise-published-status <作品> --volume 第一卷 --chapters 1-3
   fanqie revise-status <作品> --volume 第一卷 --chapters 1-3
 
 提交审核

@@ -199,6 +199,24 @@ export class FanqieApi {
     this.verifyArticle(await this.article(book, itemId), volume, chapter);
     return this.editorUrl(book, itemId);
   }
+  async publishedRevisionSnapshot(book, binding, chapter, itemId) {
+    const volume = await this.resolveVolume(book, binding);
+    const inventory = await this.inventory(book, binding);
+    const rows = inventory.filter(row => row.number === chapter.number);
+    if (rows.length !== 1 || rows[0].kind !== 'published' || rows[0].itemId !== id(itemId)) throw new Error('已发布修订不能唯一定位原ID；拒绝新建章节');
+    const data = await this.article(book, itemId);
+    if (rows[0].volumeId !== volume.volume_id || id(data.volume_id) !== volume.volume_id) throw new Error('已发布修订不允许跨卷');
+    // latest_publish_item_info 是全书最新章节，不能当作本章ID校验。原ID由唯一目录行和指定ID的正文请求确认。
+    if (data.publish_status !== 1 || Number(data.timer_status) !== 0) throw new Error('仅支持非定时的已提交章节');
+    const stages = {1:'published',4:'reviewing',7:'rejected'};
+    const stage = stages[data.display_status];
+    if (!stage || rows[0].displayStatus !== data.display_status) throw new Error('章节列表与正文状态未同步，请稍后只读查询');
+    if (data.author_speak || Number(data.column_data?.need_pay ?? 0) !== 0 || Number(data.column_data?.origin_chapter_ad_status ?? 0) !== 0) throw new Error('含有话说、收费或广告的章节不支持自动修订');
+    const actual = parseRemoteTitle(data.title);
+    if (actual.number !== chapter.number) throw new Error('原章号不符');
+    const hash = createHash('sha256').update(actual.number + '\n' + actual.title + '\n' + normalize(htmlToText(data.content))).digest('hex');
+    return {itemId:id(itemId),volumeId:volume.volume_id,volumeName:volume.volume_name,hash,title:actual.title,content:data.content,stage,realOrder:data.real_order,position:inventory.filter(r=>r.volumeId===volume.volume_id).findIndex(r=>r.itemId===id(itemId)),latestVersion:data.latest_version};
+  }
   async revisionSnapshot(book, binding, chapter, itemId) {
     const volume = await this.resolveVolume(book, binding);
     const rows = (await this.inventory(book, binding)).filter(row => row.number === chapter.number);
@@ -265,6 +283,17 @@ export class FanqieApi {
 // 只有发布命令显式创建此客户端；配置、普通 upload 和 reconcile 无法开启发布权限。
 export class FanqiePublicationApi extends FanqieApi {
   constructor(...args) { super(...args); publicationClients.add(this); }
+  async submitPublishedRevision(book, binding, chapter, itemId, expectedHash, useAi) {
+    if (!['yes','no'].includes(useAi)) throw new Error('修订提交必须提供真实AI声明');
+    const before = await this.publishedRevisionSnapshot(book,binding,chapter,itemId);
+    if (before.stage !== 'published' || before.hash !== expectedHash) throw new Error('提交前已发布原稿或状态已变化，拒绝覆盖');
+    // 官方编辑器的提交修改流程。独立于 cover_article 草稿接口，保持原ID/卷/免费设置。
+    return this.request('POST', PUBLICATION_ENDPOINT, {
+      item_id:id(itemId),book_id:id(book.bookId),title:`第${chapter.number}章 ${chapter.title}`,content:textToHTML(chapter.body),
+      volume_id:before.volumeId,volume_name:before.volumeName,publish_status:1,timer_status:0,timer_time:'',need_pay:0,
+      device_platform:'pc',speak_type:0,use_ai:useAi==='yes'?1:2,timer_chapter_preview:'[]',has_chapter_ad:'false',chapter_ad_types:'',
+    });
+  }
   async submitExistingDraft(book, binding, chapter, itemId, useAi) {
     if (!['yes', 'no'].includes(useAi)) throw new Error('发布必须提供 --use-ai yes 或 no');
     const volume = await this.resolveVolume(book, binding);

@@ -11,6 +11,7 @@ import { publishChapters } from './publish.js';
 import { reviseChapters } from './revise.js';
 import { moveChapters } from './move.js';
 import { reviseAbstract } from './metadata.js';
+import { revisePublishedChapters } from './revise-published.js';
 import { HELP } from './help.js';
 
 async function waitForEnter(message) {
@@ -25,14 +26,14 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     version: { type: 'boolean', short: 'v' }, workspace: { type: 'string', short: 'w' },
     title: { type: 'string' }, source: { type: 'string' }, discover: { type: 'boolean' },
     url: { type: 'string' }, 'book-id': { type: 'string' }, volume: { type: 'string' },
-    'abstract-file': { type: 'string' }, 'from-volume-id': { type: 'string' }, 'replace-volume-id': { type: 'string' }, 'resolve-not-applied': { type: 'boolean' },
+    'baseline-source': { type: 'string' }, 'abstract-file': { type: 'string' }, 'from-volume-id': { type: 'string' }, 'replace-volume-id': { type: 'string' }, 'resolve-not-applied': { type: 'boolean' },
     'use-ai': { type: 'string' }, 'remote-volume': { type: 'string' }, chapters: { type: 'string' }, all: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
   } });
   const [command, alias, ...extra] = positionals;
   if (flags.version) { console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version); return; }
   if (extra.length) throw new Error('多余参数；含空格的书名或分卷名请使用引号');
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename', 'publish', 'publish-status', 'revise', 'revise-status', 'move', 'move-status', 'book-abstract', 'book-abstract-status'].includes(command)) throw new Error(`未知命令：${command}`);
+  if (!['init', 'add', 'books', 'bind', 'check', 'plan', 'upload', 'reconcile', 'status', 'login', 'inspect', 'auth-refresh', 'volumes', 'volume-create', 'volume-rename', 'publish', 'publish-status', 'revise', 'revise-status', 'revise-published', 'revise-published-status', 'move', 'move-status', 'book-abstract', 'book-abstract-status'].includes(command)) throw new Error(`未知命令：${command}`);
   const { root: ROOT, data: DATA, config: CONFIG } = await resolveWorkspace(flags.workspace ?? defaultWorkspace);
   const output = value => console.log(flags.json ? JSON.stringify(value, null, 2) : typeof value === 'string' ? value : JSON.stringify(value, null, 2));
   if (command === 'init') {
@@ -105,10 +106,10 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     if (!chapters.length || !book.bookId || !book.volumes[flags.volume]) throw new Error('没有有效章节或分卷未绑定');
   }
 
-  if (['publish', 'publish-status'].includes(command)) {
+  if (['publish', 'publish-status', 'revise-published', 'revise-published-status'].includes(command)) {
     if (!flags.volume || !flags.chapters || flags.all) throw new Error('发布/查询请明确 --volume 和 --chapters，不支持 --all');
     if (flags['use-ai'] !== undefined && !['yes','no'].includes(flags['use-ai'])) throw new Error('--use-ai 只能为 yes 或 no');
-    if (command === 'publish' && !flags['dry-run'] && !flags['use-ai']) throw new Error('发布必须明确 --use-ai yes 或 no');
+    if (['publish','revise-published'].includes(command) && !flags['dry-run'] && !flags['use-ai']) throw new Error('发布必须明确 --use-ai yes 或 no');
     if (!book.bookId || !book.volumes[flags.volume]) throw new Error('发布分卷尚未绑定');
     chapters = await scanBook(book, { volume: flags.volume, chapters: flags.chapters }, ROOT);
     if (!chapters.length) throw new Error('没有选中的本地章节');
@@ -151,7 +152,7 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
     }
     // 旧工作区首次升级：一次性复用 Chrome 会话导出，此后不启动浏览器。
     if (!await readJSON(path.join(DATA, 'http-auth.json'), null)) await refreshHttpSession(fresh, DATA, { headless: flags.headless ?? true });
-    const Client = command === 'publish' && !flags['dry-run'] ? (await import('./api.js')).FanqiePublicationApi : FanqieApi;
+    const Client = ['publish','revise-published'].includes(command) && !flags['dry-run'] ? (await import('./api.js')).FanqiePublicationApi : FanqieApi;
     adapter = await new Client(fresh, { dataDir: DATA }).start();
     if (['book-abstract', 'book-abstract-status'].includes(command)) {
       if (!flags['abstract-file'] || !activeBook.bookId) throw new Error('需要绑定作品和 --abstract-file');
@@ -167,6 +168,16 @@ export async function main(args = process.argv.slice(2), { defaultWorkspace } = 
         persistState:value=>atomicJSON(stateFile,value),persistJournal:value=>atomicJSON(journalFile,value),
         dryRun:!!flags['dry-run'],statusOnly:command === 'move-status'});
       output({book:activeBook.title,results,message:'原ID草稿移卷/核验；未提交审核。'});
+    } else if (['revise-published','revise-published-status'].includes(command)) {
+      if (command === 'revise-published-status' && flags['dry-run']) throw new Error('状态查询不使用 --dry-run');
+      const journalFile=path.join(DATA,'published-revisions.json');
+      const publicationFile=path.join(DATA,'publication-state.json');
+      const baselines=flags['baseline-source'] ? await scanBook({...activeBook,source:path.resolve(ROOT,flags['baseline-source'])},{volume:flags.volume,chapters:flags.chapters},ROOT) : undefined;
+      const results=await revisePublishedChapters({adapter,book:activeBook,chapters,baselines,
+        state:await readJSON(stateFile,{}),journal:await readJSON(journalFile,{}),publication:await readJSON(publicationFile,{}),
+        persist:value=>atomicJSON(journalFile,value),persistPublication:value=>atomicJSON(publicationFile,value),
+        useAi:flags['use-ai'],dryRun:!!flags['dry-run'],statusOnly:command==='revise-published-status'});
+      output({book:activeBook.title,results,message:'原ID已发布章修订；reviewing=审核中，published=双状态及新版正文已核实。不会新建章节。'});
     } else if (['revise', 'revise-status'].includes(command)) {
       chapters = await scanBook(activeBook, { volume: flags.volume, chapters: flags.chapters }, ROOT);
       const journalFile = path.join(DATA, 'draft-revisions.json');

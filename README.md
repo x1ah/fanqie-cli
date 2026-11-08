@@ -188,3 +188,11 @@ npm run test:browser
 ## 许可证
 
 [MIT](LICENSE) © 2026 x1ah。
+
+## 修改已发布的原章节
+
+作者明确授权改稿后，先本地审读，再使用 `revise-published <作品> --volume <卷> --chapters <范围> --use-ai yes --dry-run` 核对原ID、卷、旧摘要及状态。如果历史草稿摘要早于平台文字兼容修订，可显式提供 `--baseline-source <已备份原正文目录>`，工具会将该旧稿与当前后台逐字核对，任一差异仍拒绝写入。去掉 `--dry-run` 才提交原章修改；不会新建、移卷或改变阅读位置。原HTML和发布证据保存在工作区私有 `published-revisions.json`。
+
+结果不明只运行 `revise-published-status <作品> --volume <卷> --chapters <范围>`，不重发。`reviewing` 与新版已公开 `published` 分开登记；原版本公开不代表新版已公开。普通 upload/reconcile/revise 的草稿保护不变。
+
+适配依据为官方编辑器 Publish 前端的提交修改流程：原item_id、publish_status=1、真实use_ai声明及同卷免费设置。正文写前再次比对旧摘要；平台无原子条件写，不与网页并发编辑同章。不支持收费、定时、广告或作者有话说章节。
