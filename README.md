@@ -1,94 +1,47 @@
 # Fanqie CLI
 
-在终端里管理番茄小说：上传本地章节、保存草稿、提交审核，也能管理分卷、修改草稿和更新简介。
+[![Tests](https://github.com/x1ah/fanqie-cli/actions/workflows/test.yml/badge.svg)](https://github.com/x1ah/fanqie-cli/actions/workflows/test.yml)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-支持 Markdown 和 TXT 文件，可以管理多本书。首次需要用浏览器登录，之后通常不用打开网页。
+面向番茄小说作者的命令行工具。从本地 Markdown / TXT 文件上传章节，管理草稿、分卷和发布状态，适合在本地写作后批量更新作品。
 
-**上传只会保存草稿；需要发布时，再单独提交审核。**
+首次通过浏览器手动登录，之后可直接在终端完成日常操作。支持多本作品，每本书可以使用自己的正文目录和分卷。
 
-## 支持的命令
+> **`upload` 只保存草稿，`publish` 才提交审核。** 提交审核不等于已发布，请用 `publish-status` 查询结果。
 
-以下命令都以 `fanqie` 开头，例如 `fanqie books`。`<作品>` 填添加作品时使用的简称。
+[功能](#功能) · [安装](#安装) · [快速开始](#快速开始) · [命令参考](#命令参考) · [常见问题](#常见问题) · [参与开发](#参与开发)
 
-### 作品和登录
+## 功能
 
-| 命令 | 用途 |
-| --- | --- |
-| `init` | 在当前写作目录创建配置文件 |
-| `add <作品>` | 添加一本书，指定后台书名和本地正文目录 |
-| `books` | 查看已添加的作品 |
-| `bind <作品>` | 设置本地分卷与后台作品、分卷的对应关系 |
-| `login` | 打开浏览器，手动登录并保存登录信息 |
-| `auth-refresh` | 尝试用已有浏览器登录信息恢复连接；仍失败时再运行 login |
-| `inspect <作品>` | 打开后台页面，保存用于排查问题的截图和页面信息 |
+- **章节上传**：检查章节格式，批量保存草稿，并核对后台的标题、正文和所属分卷。
+- **草稿管理**：修改已核对的草稿、调整草稿所在分卷，保留原章节，不重新创建。
+- **分卷管理**：查询、新建和重命名后台分卷，设置与本地目录的对应关系。
+- **发布与查询**：将选定草稿提交审核，分别报告草稿、审核中、已发布等状态。
+- **作品简介**：从本地文字文件更新简介，核对其他作品资料未被改动。
+- **异常恢复**：记录操作进度，遇到超时或中断后先查询结果，避免重复上传或提交。
 
-### 章节和草稿
+当前支持普通免费章节的立即提交审核，不支持定时发布、收费设置、作者有话说，以及修改或移动已发布章节。
 
-| 命令 | 用途 |
-| --- | --- |
-| `check <作品>` | 检查本地章节的文件名、标题和正文格式 |
-| `plan <作品>` | 查看准备上传哪些章节，不连接后台 |
-| `upload <作品>` | 上传到草稿箱，并检查保存内容是否正确 |
-| `status <作品>` | 查看本地保存的上传记录，不查询最新发布状态 |
-| `reconcile <作品>` | 上传结果不确定时，检查后台已有草稿，不重新上传 |
-| `revise <作品>` | 修改已上传且核对过的草稿，保留原章节 |
-| `revise-status <作品>` | 查询草稿修改是否成功 |
-| `move <作品>` | 将草稿移到指定分卷，保留原章节和正文 |
-| `move-status <作品>` | 查询草稿移卷是否成功 |
-
-### 分卷和简介
-
-| 命令 | 用途 |
-| --- | --- |
-| `volumes <作品>` | 查看后台分卷名称和编号 |
-| `volume-create <作品>` | 新建后台分卷，并记录它与本地卷目录的对应关系 |
-| `volume-rename <作品>` | 修改后台分卷名称 |
-| `book-abstract <作品>` | 用本地文字文件更新作品简介 |
-| `book-abstract-status <作品>` | 查询简介更新是否成功 |
-
-### 发布
-
-| 命令 | 用途 |
-| --- | --- |
-| `publish <作品>` | 将选定草稿提交审核，必须填写是否使用 AI |
-| `publish-status <作品>` | 查询章节是草稿、审核中、已发布还是其他状态 |
-
-### 常用参数
-
-| 参数 | 用法 |
-| --- | --- |
-| `--help` | 查看命令帮助 |
-| `--version` | 查看工具版本 |
-| `--title '书名'` | 添加作品时填写后台的实际书名 |
-| `--source './新书/正文'` | 指定本地正文目录 |
-| `--url '章节管理页地址'` | 指定作品在后台的章节管理页 |
-| `--volume 第一卷` | 选择本地分卷；正文没有分卷子目录时填 `.` |
-| `--remote-volume '第一卷：开篇'` | 填写后台的完整卷名 |
-| `--chapters 1-3` | 选择章节，也可填 `1` 或 `1,3-5` |
-| `--all` | 上传所选卷的全部章节；发布、修订和移卷不支持此参数 |
-| `--dry-run` | 只预览，不提交修改；上传预览只检查本地，其他修改操作会连接后台检查 |
-| `--use-ai yes` | 发布时声明使用了 AI，未使用则填 `no` |
-| `--from-volume-id 123456789` | 移卷时填写原后台分卷编号，可用 volumes 查询 |
-| `--abstract-file './简介.txt'` | 指定保存简介的纯文字文件 |
-| `--workspace '/写作目录'` | 指定写作目录，可简写为 `-w` |
-| `--json` | 以 JSON 格式输出结果，方便脚本读取 |
-
-章节上传、修订、移卷和发布一次处理一个卷。其他参数和操作限制见[使用说明](docs/commands.md)。
+这是独立维护的非官方工具，使用番茄作家网页接口。网站变更可能影响功能，请仅用于自己有权管理的作品。
 
 ## 安装
 
-先安装 [Node.js](https://nodejs.org/) 22 或更高版本，以及 Google Chrome。然后在终端运行：
+需要 [Node.js](https://nodejs.org/) **22 或更高版本**（含 npm）。首次登录默认使用 Google Chrome。
 
 ```bash
 npm install -g 'git+https://github.com/x1ah/fanqie-cli.git#v0.5.3'
+fanqie --version
 fanqie --help
 ```
 
-其他浏览器的配置方法见[使用说明](docs/commands.md#浏览器设置)。
+没有 Chrome 时，可改用 Playwright Chromium，配置方法见[浏览器设置](docs/commands.md#浏览器设置)。
 
-## 第一次使用
+## 快速开始
 
-先在番茄作家后台创建好作品和第一卷。下面以一本书为例：
+### 1. 添加作品并登录
+
+先在番茄作家后台创建作品和至少一个分卷，再创建本地写作目录：
 
 ```bash
 mkdir -p 我的写作目录/新书/正文/第一卷
@@ -98,91 +51,140 @@ fanqie add 新书 --title '后台实际书名' --source './新书/正文'
 fanqie login
 ```
 
-浏览器打开后，手动完成登录，再回终端按回车。
+`新书` 是作品简称，后续命令都用它。`--title` 必须与后台实际书名一致。浏览器打开后，手动登录，再回到终端按回车。
 
-接着，告诉工具这本书和第一卷在后台的位置。将下面的网址替换为自己作品的章节管理页地址，卷名也要与后台一致：
+设置本地分卷与后台分卷的对应关系。请替换下面的示例网址和卷名：
 
 ```bash
 fanqie bind 新书 \
   --url 'https://fanqienovel.com/main/writer/chapter-manage/123456789' \
   --volume 第一卷 --remote-volume '第一卷：开篇'
+fanqie volumes 新书
 ```
 
-`新书` 是你给作品起的简称，后续命令都用它。
+其中，`--volume` 是本地正文目录下的卷目录名，`--remote-volume` 是后台完整卷名。
 
-## 准备章节
+### 2. 准备章节文件
 
-将正文保存为 `新书/正文/第一卷/第001章_出发.md`，内容格式如下：
+创建 `新书/正文/第一卷/第001章_出发.md`：
 
 ```text
 # 第001章 出发
 
-这里是小说正文。
+这里是第一段正文。
 
-另起一段，空一行即可。
+这里是第二段正文。
 ```
 
-文件名和第一行的章号、章名要一致。全书章号连续，换卷后不从第1章重新编号。正文只放文字段落，不放排版标记和写作笔记。TXT 文件也可以，第一行可省略 `#`。
+- 文件名与首行的章号、章名须一致。
+- 全书章号连续，换卷不重新从第1章编号。
+- 正文使用纯文字段落，不放 Markdown 排版、注释或写作笔记。
+- TXT 文件同样支持，首行可以省略 `#`。示例仅演示格式，实际章节长度以平台要求为准。
 
-## 上传和发布
-
-先检查，再保存到草稿箱：
+### 3. 检查并上传草稿
 
 ```bash
 fanqie check 新书 --volume 第一卷 --chapters 1
+fanqie plan 新书 --volume 第一卷 --chapters 1
 fanqie upload 新书 --volume 第一卷 --chapters 1
 ```
 
-工具会检查后台保存的标题、正文和分卷是否正确。上传成功后，章节仍是草稿。
+`check` 检查文件格式，`plan` 预览上传内容，二者都不连接后台。`upload` 保存草稿后会重新读取后台内容，核对成功才记录为 `verified`；这不表示已发布。
 
-确认要发布时，提交审核并查询结果：
+批量处理时，`--chapters` 可填 `1-3` 或 `1,3-5`。一次处理一个分卷。
+
+### 4. 提交审核并查询结果
+
+确认要发布时，先预览，再提交：
 
 ```bash
+fanqie publish 新书 --volume 第一卷 --chapters 1 --use-ai yes --dry-run
 fanqie publish 新书 --volume 第一卷 --chapters 1 --use-ai yes
 fanqie publish-status 新书 --volume 第一卷 --chapters 1
 ```
 
-`--use-ai yes` 表示使用了 AI，未使用则填 `no`，请按实际情况填写。结果中的 `reviewing` 表示审核中，`published` 才表示已发布。
+`--use-ai yes` 表示使用了 AI，未使用则填 `no`，必须按真实创作情况填写。`--dry-run` 只检查和预览，不提交。
 
-一次处理多章时，把 `--chapters 1` 改成 `--chapters 1-3`。更多操作见[使用说明](docs/commands.md)，包括预览、修改草稿、调整草稿所在分卷和更新简介。
+| 查询结果 | 含义 |
+| --- | --- |
+| `draft` | 草稿，尚未提交 |
+| `reviewing` | 审核中 |
+| `published` | 已发布，内容及状态均已核对 |
+| `rejected` | 审核未通过 |
+| `scheduled` | 后台已有定时发布安排 |
+| `unknown` | 暂时无法确认，需要继续核查 |
 
-## 其他常用操作
+## 命令参考
 
-查看后台分卷，新建第二卷：
+所有命令均以 `fanqie` 开头。下表中的 `<作品>` 是添加作品时设置的简称。
+
+| 用途 | 命令 | 说明 |
+| --- | --- | --- |
+| 配置作品 | `init`、`add <作品>`、`books`、`bind <作品>` | 创建配置、添加或查看作品、对应后台分卷 |
+| 登录 | `login`、`auth-refresh` | 手动登录，或从已有浏览器登录信息恢复连接 |
+| 本地检查 | `check <作品>`、`plan <作品>`、`status <作品>` | 检查格式、预览上传、查看本地上传记录 |
+| 草稿上传 | `upload <作品>`、`reconcile <作品>` | 保存草稿，或查询上次上传是否成功 |
+| 草稿修订 | `revise <作品>`、`revise-status <作品>` | 修改已核对的草稿，或查询修改结果 |
+| 草稿移卷 | `move <作品>`、`move-status <作品>` | 调整草稿所属分卷，或查询移卷结果 |
+| 分卷管理 | `volumes <作品>`、`volume-create <作品>`、`volume-rename <作品>` | 查询、新建或重命名后台分卷 |
+| 发布 | `publish <作品>`、`publish-status <作品>` | 提交审核，或查询审核与发布状态 |
+| 简介 | `book-abstract <作品>`、`book-abstract-status <作品>` | 更新简介，或查询更新结果 |
+| 诊断 | `inspect <作品>` | 打开浏览器，导出截图和页面信息以排查问题 |
+
+常用参数：
+
+| 参数 | 示例与说明 |
+| --- | --- |
+| `--volume` | `--volume 第一卷`；无分卷子目录时填 `.` |
+| `--chapters` | `--chapters 1`、`1-3` 或 `1,3-5` |
+| `--all` | 上传所选卷的全部章节；发布、修订和移卷不支持 |
+| `--dry-run` | 仅预览；上传预览只检查本地，其他修改命令会在线检查 |
+| `--use-ai` | 发布时填写 `yes` 或 `no` |
+| `--workspace` / `-w` | 指定写作目录，如 `-w /path/to/novel` |
+| `--json` | 输出 JSON，便于脚本读取 |
+| `--help` / `-h` | 显示命令帮助 |
+| `--version` / `-v` | 显示版本 |
+
+完整参数、修订条件、移卷步骤和简介更新示例见[命令与工作区参考](docs/commands.md)。
+
+## 常见问题
+
+**登录失效怎么办？**
+
+先运行 `fanqie auth-refresh`。如果浏览器登录也已失效，再运行 `fanqie login`。
+
+**上传或提交超时了，可以直接再执行吗？**
+
+先查结果：上传使用 `reconcile`，发布使用 `publish-status`。其他操作有对应的 `*-status` 命令。不要删除操作记录来绕过错误，详见[故障恢复](docs/troubleshooting.md)。
+
+**本地改了正文，怎么更新后台草稿？**
+
+使用 `revise`，而不是再次 `upload`。工具要求旧草稿曾经核对通过，且后台内容未被其他操作改动。已发布章节不支持此操作。
+
+**登录信息保存在哪里？**
+
+保存在写作目录的 `.fanqie/`，其中也包含操作记录和部分正文备份。不要分享该文件夹；使用 Git 管理小说时，请将 `.fanqie/` 加入 `.gitignore`。更多说明见[安全说明](SECURITY.md)。
+
+## 获取帮助
+
+- 用法与参数：[命令参考](docs/commands.md)、[故障恢复](docs/troubleshooting.md)。
+- 报告问题或提出建议：[GitHub Issues](https://github.com/x1ah/fanqie-cli/issues)。请提供版本、系统、脱敏后的命令和错误信息，不要附登录凭据或未发布正文。
+- 版本变化：[CHANGELOG](CHANGELOG.md)。
+
+## 参与开发
+
+项目由 [@x1ah](https://github.com/x1ah) 维护，欢迎提交 Issue 和 Pull Request。开发环境需要 Node.js 22+：
 
 ```bash
-fanqie volumes 新书
-fanqie volume-create 新书 --volume 第二卷 --remote-volume '第二卷：远行'
+git clone https://github.com/x1ah/fanqie-cli.git
+cd fanqie-cli
+npm ci
+npm test
+npm run test:browser
 ```
 
-修改本地正文后，先预览，再更新已有草稿：
+浏览器测试默认使用 Chrome，只操作临时浏览器和本地模拟数据。开发约定、其他测试方式及提交流程见[贡献指南](CONTRIBUTING.md)。
 
-```bash
-fanqie revise 新书 --volume 第一卷 --chapters 1 --dry-run
-fanqie revise 新书 --volume 第一卷 --chapters 1
-```
+## 许可证
 
-修订要求这份草稿曾经由工具核对通过。如果后台有人另外改过内容，工具会停止，避免覆盖未知修改。
-
-将简介保存到写作目录的 `简介.txt` 后更新：
-
-```bash
-fanqie book-abstract 新书 --abstract-file './简介.txt' --dry-run
-fanqie book-abstract 新书 --abstract-file './简介.txt'
-```
-
-草稿移卷需要先设置目标卷，再指定原卷编号，完整步骤见[草稿归卷说明](docs/commands.md#原-id-草稿归卷和简介)。
-
-## 使用时注意
-
-- 登录信息保存在写作目录的 `.fanqie/` 中。不要分享这个文件夹；使用 Git 时，将它加入 `.gitignore`。
-- 遇到超时或结果不确定时，先按[故障处理](docs/troubleshooting.md)查询，不要直接重复上传或提交。
-- 目前不支持定时发布、收费设置、作者有话说，以及修改或移动已发布章节。
-
-本工具由社区独立维护，并非番茄官方产品。
-
-## 其他文档
-
-[使用说明](docs/commands.md) · [故障处理](docs/troubleshooting.md) · [参与开发](CONTRIBUTING.md) · [安全说明](SECURITY.md) · [更新记录](CHANGELOG.md)
-
-采用 [MIT 许可证](LICENSE)。
+[MIT](LICENSE) © 2026 x1ah。
