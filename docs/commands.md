@@ -193,3 +193,7 @@ fanqie revise-status 示例 --volume 第一卷 --chapters 2
 平台可能拒绝同时存在多个空分卷。此时停止创建，检查后台限制后安排作品流程；工具不会自动发布章节来解锁下一卷。
 
 `volume-create --resolve-not-applied` 只用于已有 pending 的只读恢复；只有实时完整卷清单与写前相同且无目标卷时才记录 not-applied，不发送创建请求。之后显式新建保留 previousAttempt。
+
+## 浏览器设置
+
+默认使用 Google Chrome。没有 Chrome 时，在工具安装目录运行 `npx playwright install chromium`，然后将写作目录 `.fanqie/config.json` 中的 `browser.channel` 改为 `""`。首次登录仍需在本机终端运行 `fanqie login`。
