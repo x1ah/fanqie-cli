@@ -15,7 +15,7 @@ npm install -g 'git+https://github.com/x1ah/fanqie-cli.git#v0.5.3'
 fanqie --help
 ```
 
-仓库仍为私有时，需要有 GitHub 访问权限才能安装。其他浏览器的配置方法见[使用说明](docs/commands.md#浏览器设置)。
+其他浏览器的配置方法见[使用说明](docs/commands.md#浏览器设置)。
 
 ## 第一次使用
 
