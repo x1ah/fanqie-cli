@@ -1,5 +1,7 @@
 # 作家后台 HTTP API 可行性研究
 
+> 历史研究记录，描述各阶段当时的证据范围，不代表当前功能或验收状态。当前使用说明见 [README](../README.md) 与[命令参考](commands.md)。
+
 ## 草稿写入协议更正（2026-11-01）
 
 网页「存草稿」实际调用POST `/api/author/article/cover_article/v0/`，业务字段为book_id、item_id、title、content、volume_name、volume_id，另附公共参数。已在拦截所有作者写请求的诊断上下文中捕获按钮请求，发送前中止；修正后的CLI再以真实业务章节完成草稿列表、正文、卷ID及publish_status=0回读。

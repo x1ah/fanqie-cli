@@ -1,10 +1,10 @@
 {
   "name": "@x1ah/fanqie-cli",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "description": "番茄作家后台 HTTP CLI：分卷管理、草稿上传、独立发布与回读核对",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "bin": {
     "fanqie": "./bin/fanqie.js"
   },
@@ -24,7 +24,11 @@
     "bin/",
     "src/",
     "README.md",
-    "docs/"
+    "docs/",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "AGENTS.md"
   ],
   "scripts": {
     "fanqie": "node bin/fanqie.js",
@@ -40,6 +44,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/x1ah/fanqie-cli.git"
-  }
+    "url": "git+https://github.com/x1ah/fanqie-cli.git"
+  },
+  "homepage": "https://github.com/x1ah/fanqie-cli#readme",
+  "bugs": {
+    "url": "https://github.com/x1ah/fanqie-cli/issues"
+  },
+  "keywords": [
+    "fanqie",
+    "novel",
+    "cli",
+    "markdown"
+  ]
 }
